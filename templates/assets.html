@@ -1,0 +1,1187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>资产库 - Web 资产管理系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-brand">🛡️ Web 资产管理系统</div>
+  <div class="nav-links">
+    <a href="/">📊 仪表盘</a>
+    <a href="/search">🔍 全局搜索</a>
+    <a href="/scan">🚀 域名探索</a>
+    <a href="/assets" class="active">📦 资产库</a>
+    <a href="/txt-import">📄 TXT导入</a>
+    <a href="/graph">📊 资产图谱</a>
+    <a href="/ai">🤖 AI助手</a>
+    <a href="/settings">⚙️ 系统设置</a>
+  </div>
+  <form class="nav-search" onsubmit="quickSearch(event)">
+    <input type="text" id="nav-q" placeholder="快速搜索… 回车">
+  </form>
+</nav>
+
+<main class="container">
+  <h1>资产库</h1>
+
+  <div class="assets-layout">
+    <aside class="tag-sidebar">
+      <h3>标签筛选</h3>
+      <div style="margin-bottom:10px"><button class="link-btn" onclick="openTagModal()" title="手动添加/删除自定义标签">＋ 新建标签</button></div>
+      <div id="tag-list">
+        <a class="tag-chip active" href="javascript:filterTag('')">全部</a>
+        {% for tag, count in tags.items() %}
+          <a class="tag-chip" href="javascript:filterTag('{{ tag }}')" data-tag="{{ tag }}">{{ tag }} <span class="tag-count">{{ count }}</span></a>
+        {% endfor %}
+      </div>
+    </aside>
+
+    <section class="assets-main">
+      <!-- Advanced search bar -->
+      <div class="search-bar">
+        <input type="text" id="search-input" placeholder="🔍 搜索域名/URL/IP/标题…">
+        <select id="country-filter">
+          <option value="">🌍 全部国家</option>
+        </select>
+        <select id="cms-filter">
+          <option value="">📦 全部CMS</option>
+        </select>
+        <select id="source-filter">
+          <option value="">📂 全部来源</option>
+        </select>
+        <select id="tag-multi-filter" multiple size="1" title="标签多选">
+          {% for tag in tags.keys() %}<option value="{{ tag }}">{{ tag }}</option>{% endfor %}
+        </select>
+        <button onclick="reloadAssets(1)" class="btn-primary">搜索</button>
+        <button onclick="resetSearch()" class="btn-outline">重置</button>
+        <button onclick="exportCSV()" class="btn-outline">导出CSV</button>
+        <button onclick="openAddModal()" class="btn-primary">+ 新增资产</button>
+        <label class="btn-outline">导入CSV<input type="file" id="csv-file" accept=".csv" hidden onchange="importCSV(this)"></label>
+        <button onclick="batchDelete()" class="btn-danger-outline">批量删除</button>
+        <button onclick="identifySelectedAssets()" class="btn-primary" title="识别选中资产的CMS指纹">🔍 识别选中资产 CMS</button>
+        <button onclick="scanPortsSelected()" class="btn-outline" id="port-scan-btn" title="对勾选资产（或当前页）执行轻量 TCP 端口 banner 识别">🔌 扫描端口</button>
+        <button onclick="openNucleiModal()" class="btn-outline" title="对选中/当前页资产执行 Nuclei 被动漏洞扫描">🛡️ Nuclei 扫描</button>
+        <button onclick="openDictModal()" class="btn-outline" title="管理国家/CMS/来源选项">⚙️ 选项管理</button>
+        <button onclick="openTagModal()" class="btn-outline" title="手动添加/删除自定义标签">🏷️ 标签管理</button>
+      </div>
+      <div id="port-scan-status" class="muted hidden" style="margin:6px 0 0;font-size:13px"></div>
+
+      <div class="table-scroll">
+        <table class="asset-table" id="assets-table">
+          <thead><tr>
+            <th><input type="checkbox" id="select-all-assets" onchange="toggleAllAssets(this)"></th>
+            <th onclick="setSort('domain')" class="sortable">域名 ↕</th>
+            <th>URL</th><th>IP</th><th>端口</th><th>服务</th><th>标题</th>
+            <th>国家</th><th>CMS</th><th>Server</th><th>WAF</th>
+            <th>来源</th><th>标签</th>
+            <th onclick="setSort('created_at')" class="sortable">创建时间 ↕</th>
+            <th>操作</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="pagination">
+        <span id="page-info"></span>
+        <button onclick="prevPage()" id="prev-btn">上一页</button>
+        <button onclick="nextPage()" id="next-btn">下一页</button>
+      </div>
+    </section>
+  </div>
+</main>
+
+<!-- Add/Edit Modal -->
+<div id="asset-modal" class="modal hidden">
+  <div class="modal-content modal-lg">
+    <div class="modal-tabs">
+      <button class="tab-btn active" onclick="switchTab('info', this)">资产信息</button>
+      <button class="tab-btn" onclick="switchTab('ports', this)">🔌 端口服务</button>
+      <button class="tab-btn" onclick="switchTab('vuln', this)">关联漏洞</button>
+      <button class="tab-btn" onclick="switchTab('nuclei', this)">Nuclei 漏洞</button>
+    </div>
+    <div id="tab-info">
+      <h3 id="modal-title">新增资产</h3>
+      <form id="asset-form" onsubmit="submitAsset(event)">
+        <input type="hidden" id="f-id">
+        <div class="form-grid">
+          <label>域名*<input type="text" id="f-domain" required></label>
+          <label>URL<input type="text" id="f-url"></label>
+          <label>IP<input type="text" id="f-ip"></label>
+          <label>端口<input type="text" id="f-port"></label>
+          <label>标题<input type="text" id="f-title"></label>
+          <label>国家/地区
+            <div class="inline-select">
+              <select id="f-country"></select>
+              <button type="button" class="mini-btn" onclick="quickAddOption('country')" title="添加新的国家/地区">＋</button>
+            </div>
+          </label>
+          <label>CMS
+            <div class="inline-select">
+              <select id="f-cms"></select>
+              <button type="button" class="mini-btn" onclick="quickAddOption('cms')" title="添加新的CMS类型">＋</button>
+            </div>
+          </label>
+          <label>Server (中间件)<input type="text" id="f-server" placeholder="nginx/1.18.0"></label>
+          <label>WAF
+            <select id="f-waf">
+              <option>None</option><option>Cloudflare</option><option>阿里云WAF</option>
+              <option>AWS WAF</option><option>Akamai</option><option>Incapsula</option><option>Sucuri</option>
+            </select>
+          </label>
+          <label>负责人<input type="text" id="f-owner"></label>
+          <label>到期时间<input type="date" id="f-expiration"></label>
+          <label>标签（逗号分隔）<input type="text" id="f-tags" placeholder="官网,测试" list="tag-suggest"></label>
+          <label>备注<textarea id="f-remark" rows="2"></textarea></label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" onclick="lookupWhois()" class="btn-outline" id="whois-btn">查询到期时间</button>
+          <button type="button" onclick="closeModal()" class="btn-outline">取消</button>
+          <button type="submit" class="btn-primary">保存</button>
+        </div>
+      </form>
+    </div>
+    <div id="tab-ports" class="hidden">
+      <h3>端口与服务（被动探测）</h3>
+      <p class="muted" id="ports-hint">轻量 TCP banner 识别：connect + 读取服务标识（如 SSH/MySQL/Redis/HTTP），不发送任何攻击载荷。扫描结果同时写入资产库「端口 / 服务」字段。</p>
+      <div class="modal-actions" style="justify-content:flex-start">
+        <button onclick="scanCurrentAssetPorts()" class="btn-primary" id="ports-scan-btn">🔌 扫描/重新扫描端口</button>
+        <span class="muted">手动扫描忽略 24 小时去重</span>
+      </div>
+      <div id="ports-list" class="cve-list"></div>
+    </div>
+    <div id="tab-vuln" class="hidden">
+      <h3>关联漏洞 (CVE)</h3>
+      <p class="muted">外部情报联动：根据资产的 Server / CMS 字段（如 nginx/1.18.0、WordPress 5.9）自动调用 NVD API 检索相关 CVE。仅展示公开情报，不执行任何攻击性扫描。</p>
+      <div class="modal-actions" style="justify-content:flex-start">
+        <button onclick="loadCVE()" class="btn-primary" id="cve-btn">查询CVE</button>
+        <label class="checkbox-row"><input type="checkbox" id="cve-auto" checked> 打开详情时自动查询</label>
+      </div>
+      <p class="muted" id="vuln-hint">点击【查询CVE】开始检索。</p>
+      <div id="cve-list" class="cve-list"></div>
+    </div>
+    <div id="tab-nuclei" class="hidden">
+      <h3>Nuclei 漏洞 (被动扫描)</h3>
+      <p class="muted" id="nuclei-hint">执行 Nuclei 被动扫描后，发现的漏洞将保存在此处。扫描前会自动检测代理与出口 IP。</p>
+      <div class="modal-actions" style="justify-content:flex-start">
+        <button onclick="openNucleiModalForAsset()" class="btn-primary" id="nuclei-scan-this-btn">🛡️ 扫描该资产</button>
+        <button onclick="clearNucleiResults()" class="btn-outline">清除结果</button>
+      </div>
+      <div id="nuclei-sev-summary" class="nuclei-sev-summary"></div>
+      <div id="nuclei-list" class="cve-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Custom Tag Management Modal -->
+<div id="tag-modal" class="modal hidden">
+  <div class="modal-content">
+    <h3>🏷️ 标签管理</h3>
+    <p class="muted">手动自定义标签（如 项目A、核心资产），可用于标签筛选、批量标记和自动补全。已关联的资产数据不受影响，删除标签会同时解除其与资产的关联。</p>
+    <div class="dict-add-row">
+      <input type="text" id="tag-new-value" placeholder="输入新标签名称，如 项目A、核心资产" maxlength="50">
+      <button onclick="addCustomTag()" class="btn-primary">添加</button>
+    </div>
+    <div id="tag-manage-list" class="dict-list"></div>
+    <div class="modal-actions">
+      <button onclick="closeTagModal()" class="btn-primary">完成</button>
+    </div>
+  </div>
+</div>
+
+<datalist id="tag-suggest"></datalist>
+
+<!-- Dictionary Options Modal (country / cms / source) -->
+<div id="dict-modal" class="modal hidden">
+  <div class="modal-content modal-lg">
+    <h3>选项管理（国家 / CMS / 来源）</h3>
+    <p class="muted">下拉框选项支持手动添加和删除；新增资产时填写的新国家/CMS/来源会自动加入选项。</p>
+    <div class="dict-add-row">
+      <input type="text" id="dict-new-value" placeholder="输入新选项名称，如 新加坡、WebLogic" maxlength="100">
+      <select id="dict-new-type">
+        <option value="country">国家/地区</option>
+        <option value="cms">CMS类型</option>
+        <option value="source">来源</option>
+      </select>
+      <button onclick="addDictOption()" class="btn-primary">添加</button>
+    </div>
+    <div class="dict-grid">
+      <div class="dict-column">
+        <h4>🌍 国家/地区</h4>
+        <div id="dict-list-country" class="dict-list"></div>
+      </div>
+      <div class="dict-column">
+        <h4>📦 CMS类型</h4>
+        <div id="dict-list-cms" class="dict-list"></div>
+      </div>
+      <div class="dict-column">
+        <h4>📂 来源</h4>
+        <div id="dict-list-source" class="dict-list"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button onclick="closeDictModal()" class="btn-primary">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- Nuclei Scan Modal -->
+<div id="nuclei-modal" class="modal hidden">
+  <div class="modal-content modal-xl">
+    <h3>🛡️ Nuclei 被动漏洞扫描</h3>
+    <p class="muted" id="nuclei-scope-text"></p>
+
+    <div class="env-box">
+      <div class="env-head">
+        <b>🔍 环境检测（扫描前自动执行）</b>
+        <button type="button" class="link-btn" onclick="runNucleiEnvCheck()">重新检测</button>
+      </div>
+      <div id="nuclei-env-box" class="env-result"><span class="muted">检测中…</span></div>
+    </div>
+
+    <div class="mode-switch">
+      <button type="button" class="mode-btn active" id="mode-visual-btn" onclick="setNucleiMode('visual')">🎛️ 可视化模式</button>
+      <button type="button" class="mode-btn" id="mode-advanced-btn" onclick="setNucleiMode('advanced')">⌨️ 高级模式</button>
+    </div>
+
+    <div id="nuclei-visual-panel" class="nuclei-opt">
+      <label class="checkbox-row"><input type="checkbox" id="nu-passive" checked> 被动扫描（<code>-passive</code>，仅无攻击性探测；需 Nuclei v3.2+）</label>
+      <label class="checkbox-row"><input type="checkbox" id="nu-both-schemes" checked> 同时探测 http:// 与 https://</label>
+      <div class="form-grid">
+        <label>严重级别<input type="text" id="nu-severity" value="low,medium,high,critical" placeholder="critical,high,medium,low,info"></label>
+        <label>模板标签 tags（可选）<input type="text" id="nu-tags" placeholder="如 cve,default-login,exposure"></label>
+        <label>自定义模板路径（可选）<input type="text" id="nu-templates" placeholder="如 C:\templates 或指定 .yaml"></label>
+      </div>
+    </div>
+
+    <div id="nuclei-advanced-panel" class="nuclei-opt hidden">
+      <p class="muted" style="margin-bottom:8px">直接输入任意 Nuclei 参数。系统会自动附加 <code>-u 目标</code>、<code>-json</code>、<code>-silent</code> 以及代理 <code>-proxy</code>；禁止传入会覆盖目标/输出/代理的参数（<code>-u</code>、<code>-l</code>、<code>-json</code>、<code>-o</code>、<code>-proxy</code> 等）。参数以 argv 逐词执行（不经 shell），无法进行命令注入。</p>
+      <textarea id="nu-args" rows="4" placeholder="-id log4shell -severity critical -rl 30"></textarea>
+      <p class="muted">💡 高级模式下「严重级别/标签/模板」以参数形式在此填写，例如 <code>-severity critical,high</code> 或 <code>-tags cve</code>。</p>
+    </div>
+
+    <div id="nuclei-progress" class="hidden">
+      <div class="scan-status" style="margin:0 0 8px">
+        <div class="spinner"></div>
+        <span id="nuclei-progress-text">准备中…</span>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap" id="nuclei-progress-sev"></div>
+    </div>
+
+    <div class="modal-actions">
+      <button type="button" onclick="closeNucleiModal()" class="btn-outline">取消</button>
+      <button type="button" onclick="startNucleiScan()" class="btn-primary" id="nuclei-start-btn" disabled>开始扫描</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentPage=1, totalPages=1, currentSort='updated_at', currentOrder='desc';
+let currentTag = new URLSearchParams(location.search).get('tag')||'';
+let DICT = {country:[], cms:[], source:[]};
+
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function quickSearch(e){ e.preventDefault(); const v=document.getElementById('nav-q').value.trim(); if(v) location.href='/search?q='+encodeURIComponent(v); }
+
+function parseSvc(a){ try{ return JSON.parse(a.service||'{}'); }catch(e){ return {}; } }
+function portSvcCell(a){
+  const m=parseSvc(a);
+  const entries=Object.entries(m);
+  const scanned=!!((a.ports_scanned_at||'').trim());
+  if(!scanned || !entries.length){
+    return '<span class="muted" title="未执行端口扫描（可勾选后点击「🔌 扫描端口」）">未扫描</span>';
+  }
+  const names=entries.map(([p,s])=>esc(s||('端口'+p))).join(', ');
+  const tip=entries.map(([p,s])=>p+(s?': '+s:'')).join(' | ');
+  return '<span title="'+esc(tip+'（扫描于 '+((a.ports_scanned_at||'').slice(0,16))+'）')+'">'+names+'</span>';
+}
+
+async function loadDict(){
+  const resp=await fetch('/api/dict');
+  const data=await resp.json();
+  if(data.ok) DICT = {country:data.options.country||[], cms:data.options.cms||[], source:data.options.source||[]};
+  fillFilterSelects(); fillFormSelects(); renderDictModal();
+}
+
+function optHtml(list, selected, emptyLabel){
+  let html = emptyLabel!=null ? `<option value="">${emptyLabel}</option>` : '';
+  html += list.map(v=>`<option value="${esc(v)}" ${v===selected?'selected':''}>${esc(v)}</option>`).join('');
+  return html;
+}
+
+function fillFilterSelects(){
+  document.getElementById('country-filter').innerHTML = optHtml(DICT.country, null, '🌍 全部国家');
+  document.getElementById('cms-filter').innerHTML = optHtml(DICT.cms, null, '📦 全部CMS');
+  document.getElementById('source-filter').innerHTML = optHtml(DICT.source, null, '📂 全部来源');
+}
+
+function fillFormSelects(keep){
+  const keepCountry = keep!=null ? keep : document.getElementById('f-country').value;
+  const keepCms = keep!=null ? keep : document.getElementById('f-cms').value;
+  document.getElementById('f-country').innerHTML = optHtml(DICT.country, keepCountry, '未知');
+  document.getElementById('f-cms').innerHTML = optHtml(DICT.cms, keepCms, '未知');
+}
+
+/* ---------- dictionary management ---------- */
+
+function openDictModal(){ loadDict(); document.getElementById('dict-modal').classList.remove('hidden'); }
+function closeDictModal(){ document.getElementById('dict-modal').classList.add('hidden'); loadDict(); }
+
+function renderDictModal(){
+  const cols = {country:'dict-list-country', cms:'dict-list-cms', source:'dict-list-source'};
+  for(const [dtype, elId] of Object.entries(cols)){
+    const box=document.getElementById(elId);
+    box.innerHTML = (DICT[dtype]||[]).map(v=>
+      `<span class="dict-chip" data-value="${esc(v)}">${esc(v)}<button class="dict-del" onclick="removeDictOption('${dtype}', this.closest('.dict-chip').dataset.value)" title="删除">×</button></span>`
+    ).join('') || '<span class="muted">（空）</span>';
+  }
+}
+
+async function addDictOption(){
+  const value=document.getElementById('dict-new-value').value.trim();
+  const dtype=document.getElementById('dict-new-type').value;
+  if(!value){ alert('请输入选项名称'); return; }
+  const resp=await fetch('/api/dict/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:dtype, value})});
+  const data=await resp.json();
+  if(!data.ok){ alert('添加失败: '+(data.error||'')); return; }
+  document.getElementById('dict-new-value').value='';
+  await loadDict();
+}
+
+async function removeDictOption(dtype, value){
+  if(!confirm(`确认删除选项「${value}」？\n（已保存的资产数据不受影响，仅移除下拉选项）`)) return;
+  const resp=await fetch('/api/dict/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:dtype, value})});
+  const data=await resp.json();
+  if(!data.ok){ alert('删除失败: '+(data.error||'')); return; }
+  await loadDict();
+}
+
+/* ---------- custom tag management ---------- */
+
+async function fetchTagNames(){
+  const resp=await fetch('/api/tags');
+  const data=await resp.json();
+  return data.ok ? Object.keys(data.tags||{}) : [];
+}
+
+function openTagModal(){
+  document.getElementById('tag-modal').classList.remove('hidden');
+  fetchTagNames().then(names=>{
+    document.getElementById('tag-manage-list').innerHTML =
+      names.map(n=>`<span class="dict-chip" data-value="${esc(n)}">${esc(n)}<button class="dict-del" onclick="removeCustomTag(this.closest('.dict-chip').dataset.value)" title="删除">×</button></span>`).join('') ||
+      '<span class="muted">（暂无标签）</span>';
+  });
+}
+function closeTagModal(){ document.getElementById('tag-modal').classList.add('hidden'); }
+
+async function addCustomTag(){
+  const name=document.getElementById('tag-new-value').value.trim();
+  if(!name){ alert('请输入标签名称'); return; }
+  const resp=await fetch('/api/tags/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+  const data=await resp.json();
+  if(!data.ok){ alert('添加失败: '+(data.error||'')); return; }
+  document.getElementById('tag-new-value').value='';
+  openTagModal();
+  refreshTagUI();
+}
+
+async function removeCustomTag(name){
+  if(!confirm(`确认删除标签「${name}」？\n（使用该标签的资产将解除关联，资产本身不受影响）`)) return;
+  const resp=await fetch('/api/tags/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+  const data=await resp.json();
+  if(!data.ok){ alert('删除失败: '+(data.error||'')); return; }
+  if(currentTag===name) currentTag='';
+  openTagModal();
+  refreshTagUI();
+}
+
+/* rebuild tag sidebar + multi-select filter + autocomplete after tag changes */
+async function refreshTagUI(){
+  const resp=await fetch('/api/tags');
+  const data=await resp.json();
+  const tags=data.ok?data.tags:{};
+  const list=document.getElementById('tag-list');
+  list.innerHTML=`<a class="tag-chip active" href="javascript:filterTag('')">全部</a>` +
+    Object.keys(tags).map(t=>`<a class="tag-chip" href="javascript:filterTag('${esc(t)}')" data-tag="${esc(t)}">${esc(t)} <span class="tag-count">${tags[t]}</span></a>`).join('');
+  const ms=document.getElementById('tag-multi-filter');
+  const sel=[...ms.selectedOptions].map(o=>o.value);
+  ms.innerHTML=Object.keys(tags).map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('');
+  [...ms.options].forEach(o=>{ if(sel.includes(o.value)) o.selected=true; });
+  const dl=document.getElementById('tag-suggest');
+  if(dl) dl.innerHTML=Object.keys(tags).map(t=>`<option value="${esc(t)}">`).join('');
+  document.querySelectorAll('#tag-list .tag-chip').forEach(c=>{
+    c.classList.toggle('active', c.dataset.tag===currentTag || (!currentTag && !c.dataset.tag));
+  });
+}
+
+/* quick-add from the asset form (＋ button next to country/CMS selects) */
+async function quickAddOption(dtype){
+  const label = dtype==='country' ? '国家/地区' : 'CMS类型';
+  const value = prompt(`添加新的${label}:`);
+  if(value==null) return;
+  const v=value.trim();
+  if(!v){ alert('名称不能为空'); return; }
+  const resp=await fetch('/api/dict/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:dtype, value:v})});
+  const data=await resp.json();
+  if(!data.ok){ alert('添加失败: '+(data.error||'')); return; }
+  await loadDict();
+  const sel=document.getElementById(dtype==='country'?'f-country':'f-cms');
+  sel.value=v;
+}
+
+/* ---------- asset list ---------- */
+
+function filterTag(tag){
+  currentTag=tag;
+  document.querySelectorAll('#tag-list .tag-chip').forEach(c=>{
+    c.classList.toggle('active', c.dataset.tag===tag || (!tag && !c.dataset.tag));
+  });
+  // sync tag multi-select
+  const ms=document.getElementById('tag-multi-filter');
+  [...ms.options].forEach(o=> o.selected = (o.value===tag));
+  reloadAssets(1);
+}
+
+function setSort(col){
+  if(currentSort===col){ currentOrder = currentOrder==='desc'?'asc':'desc'; }
+  else { currentSort=col; currentOrder='desc'; }
+  reloadAssets(currentPage);
+}
+
+function getFilters(){
+  const tagsMulti=[...document.getElementById('tag-multi-filter').selectedOptions].map(o=>o.value).filter(Boolean);
+  return {
+    search: document.getElementById('search-input').value.trim()||'',
+    country: document.getElementById('country-filter').value,
+    cms: document.getElementById('cms-filter').value,
+    source: document.getElementById('source-filter').value,
+    tag: currentTag||'',
+    tags: tagsMulti,
+  };
+}
+
+async function reloadAssets(page){
+  currentPage=page||1;
+  const f=getFilters();
+  const params=new URLSearchParams();
+  params.set('page',currentPage); params.set('sort',currentSort); params.set('order',currentOrder);
+  if(f.search)params.set('search',f.search);
+  if(f.country)params.set('country',f.country);
+  if(f.cms)params.set('cms',f.cms);
+  if(f.source)params.set('source',f.source);
+  if(f.tag)params.set('tag',f.tag);
+  f.tags.forEach(t=>params.append('tags',t));
+  const resp=await fetch('/api/assets?'+params);
+  const data=await resp.json();
+  const tb=document.querySelector('#assets-table tbody'); tb.innerHTML='';
+  const total=data.total||0; const perPage=data.per_page||20;
+  totalPages=Math.ceil(total/perPage)||1;
+  document.getElementById('page-info').textContent=`共 ${total} 条 · 第 ${currentPage}/${totalPages} 页`;
+  document.getElementById('prev-btn').disabled=currentPage<=1;
+  document.getElementById('next-btn').disabled=currentPage>=totalPages;    (data.assets||[]).forEach(a=>{
+    const tags=(a.tags||[]).map(t=>`<span class="mini-tag">${esc(t)}</span>`).join(' ');
+    const tr=document.createElement('tr');
+    // Make CMS clickable for quick filtering
+    const cmsHtml = a.cms ? `<span class="cms-link" onclick="filterByCms('${esc(a.cms)}')" title="点击筛选 ${esc(a.cms)}">${esc(a.cms)}</span>` : '-';
+    tr.innerHTML=`<td><input type="checkbox" class="asset-check" value="${a.id}"></td>
+      <td>${esc(a.domain)}</td><td>${esc(a.url)}</td><td>${esc(a.ip)}</td><td>${esc(a.port)}</td><td>${portSvcCell(a)}</td>
+      <td>${esc(a.title)}</td><td>${esc(a.country)||'-'}</td><td>${cmsHtml}</td>
+      <td>${esc(a.server)||'-'}</td><td>${esc(a.waf)||'-'}</td>
+      <td><span class="src-badge ${esc(a.source)}">${esc(a.source)}</span></td>
+      <td>${tags}</td><td>${esc((a.created_at||'').slice(0,16))}</td>
+      <td><button class="link-btn" onclick='editAsset(${JSON.stringify(a).replace(/'/g,"&#39;")})'>详情</button></td>`;
+    tb.appendChild(tr);
+  });
+}
+
+function filterByCms(cms){
+  document.getElementById('cms-filter').value = cms;
+  reloadAssets(1);
+}
+
+function toggleAllAssets(cb){ document.querySelectorAll('.asset-check').forEach(c=>c.checked=cb.checked); }
+
+function prevPage(){ if(currentPage>1) reloadAssets(currentPage-1); }
+function nextPage(){ if(currentPage<totalPages) reloadAssets(currentPage+1); }
+
+function resetSearch(){
+  document.getElementById('search-input').value='';
+  document.getElementById('country-filter').value='';
+  document.getElementById('cms-filter').value='';
+  document.getElementById('source-filter').value='';
+  [...document.getElementById('tag-multi-filter').selectedOptions].forEach(o=>o.selected=false);
+  currentTag=''; filterTag('');
+}
+
+function openAddModal(){
+  document.getElementById('modal-title').textContent='新增资产';
+  ['f-id','f-domain','f-url','f-ip','f-port','f-title','f-server','f-owner','f-expiration','f-tags','f-remark'].forEach(id=>document.getElementById(id).value='');
+  fillFormSelects('');
+  document.getElementById('f-waf').value='None';
+  document.getElementById('vuln-hint').textContent='点击【查询CVE】开始检索。';
+  document.getElementById('cve-list').innerHTML='';
+  resetNucleiTab();
+  switchTab('info', document.querySelector('.modal-tabs .tab-btn'));
+  document.getElementById('asset-modal').classList.remove('hidden');
+}
+
+function editAsset(a){
+  document.getElementById('modal-title').textContent='编辑资产: '+a.domain;
+  document.getElementById('f-id').value=a.id;
+  document.getElementById('f-domain').value=a.domain||'';
+  document.getElementById('f-url').value=a.url||'';
+  document.getElementById('f-ip').value=a.ip||'';
+  document.getElementById('f-port').value=a.port||'';
+  document.getElementById('f-title').value=a.title||'';
+  // make sure current values exist in the dictionaries (assets created elsewhere)
+  fillFormSelects('');
+  const selCountry=document.getElementById('f-country');
+  selCountry.value=a.country||'';
+  if(a.country && !DICT.country.includes(a.country)){
+    selCountry.insertAdjacentHTML('beforeend', `<option value="${esc(a.country)}" selected>${esc(a.country)}</option>`);
+    selCountry.value=a.country;
+  }
+  const selCms=document.getElementById('f-cms');
+  selCms.value=a.cms||'';
+  if(a.cms && !DICT.cms.includes(a.cms)){
+    selCms.insertAdjacentHTML('beforeend', `<option value="${esc(a.cms)}" selected>${esc(a.cms)}</option>`);
+    selCms.value=a.cms;
+  }
+  document.getElementById('f-server').value=a.server||'';
+  document.getElementById('f-waf').value=a.waf||'None';
+  document.getElementById('f-owner').value=a.owner||'';
+  document.getElementById('f-expiration').value=(a.expiration_date||'').slice(0,10);
+  document.getElementById('f-tags').value=(a.tags||[]).join(',');
+  document.getElementById('f-remark').value=a.remark||'';
+  document.getElementById('vuln-hint').textContent='点击【查询CVE】开始检索。';
+  document.getElementById('cve-list').innerHTML='';
+  resetNucleiTab();
+  switchTab('info', document.querySelector('.modal-tabs .tab-btn'));
+  document.getElementById('asset-modal').classList.remove('hidden');
+  // 外部情报联动：server/cms 已填写时自动查询关联 CVE
+  if((a.server||a.cms) && document.getElementById('cve-auto').checked){
+    setTimeout(loadCVE, 100);
+  } else if(!a.server && !a.cms){
+    document.getElementById('vuln-hint').textContent='提示：请先完善资产指纹信息（Server 或 CMS），才能查询关联 CVE。';
+  }
+}
+
+function closeModal(){ document.getElementById('asset-modal').classList.add('hidden'); }
+
+function switchTab(tab, btn){
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  document.getElementById('tab-info').classList.toggle('hidden',tab!=='info');
+  document.getElementById('tab-ports').classList.toggle('hidden',tab!=='ports');
+  document.getElementById('tab-vuln').classList.toggle('hidden',tab!=='vuln');
+  document.getElementById('tab-nuclei').classList.toggle('hidden',tab!=='nuclei');
+  if(tab==='ports') loadPortServices();
+  if(tab==='nuclei') loadNucleiResults();
+}
+
+async function submitAsset(e){
+  e.preventDefault();
+  const id=document.getElementById('f-id').value;
+  const body={
+    domain:document.getElementById('f-domain').value.trim(),
+    url:document.getElementById('f-url').value.trim(),
+    ip:document.getElementById('f-ip').value.trim(),
+    port:document.getElementById('f-port').value.trim(),
+    title:document.getElementById('f-title').value.trim(),
+    country:document.getElementById('f-country').value,
+    cms:document.getElementById('f-cms').value,
+    server:document.getElementById('f-server').value.trim(),
+    waf:document.getElementById('f-waf').value,
+    owner:document.getElementById('f-owner').value.trim(),
+    remark:document.getElementById('f-remark').value.trim(),
+    expiration_date:document.getElementById('f-expiration').value,
+    tags:document.getElementById('f-tags').value,
+  };
+  if(id){
+    const resp=await fetch('/api/assets/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data=await resp.json();
+    if(!data.ok && data.error && data.error.includes('已存在')){ if(confirm('域名已存在，是否更新？')){ /* retry with update */ } }
+  } else {
+    const resp=await fetch('/api/assets/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data=await resp.json();
+    if(!data.created){ alert('该域名已存在，已更新信息。'); }
+  }
+  await loadDict();   // 新填写的国家/CMS/来源已自动入选项库
+  closeModal(); reloadAssets(currentPage);
+}
+
+async function batchDelete(){
+  const ids=[...document.querySelectorAll('.asset-check:checked')].map(c=>parseInt(c.value));
+  if(!ids.length){ alert('请先勾选要删除的资产'); return; }
+  if(!confirm(`确认删除选中的 ${ids.length} 条资产？`)) return;
+  await fetch('/api/assets/batch-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})});
+  reloadAssets(currentPage);
+}
+
+let identificationInProgress = false;
+let identificationTaskId = null;
+
+async function identifySelectedAssets(){
+  if(identificationInProgress){
+    alert('正在执行识别任务，请稍候...');
+    return;
+  }
+  
+  const ids=[...document.querySelectorAll('.asset-check:checked')].map(c=>parseInt(c.value));
+  let body = {};
+  
+  if(!ids.length){
+    // No selection: identify all on current page
+    if(!confirm('未选择资产，将识别当前页所有资产的CMS，是否继续？')) return;
+    const f=getFilters();
+    body={
+      use_current_page:true,
+      page:currentPage,
+      per_page:20,
+      sort:currentSort,
+      order:currentOrder,
+      search:f.search||null,
+      country:f.country||null,
+      cms:f.cms||null,
+      source:f.source||null,
+      tag:f.tag||null,
+      tags_multi:f.tags||[],
+    };
+  } else {
+    body={ids:ids};
+  }
+  
+  identificationInProgress = true;
+  const btn = document.querySelector('button[onclick="identifySelectedAssets()"]');
+  btn.disabled = true;
+  btn.textContent = '⏳ 识别中...';
+  
+  try {
+    const resp=await fetch('/api/assets/identify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data=await resp.json();
+    if(data.ok){
+      identificationTaskId = data.task_id;
+      showIdentificationProgress(data.count);
+      pollIdentificationProgress(data.task_id);
+    } else {
+      alert('识别失败: '+(data.error||''));
+      identificationInProgress = false;
+      btn.disabled = false;
+      btn.textContent = '🔍 识别选中资产 CMS';
+    }
+  } catch(e) {
+    alert('请求失败: '+e.message);
+    identificationInProgress = false;
+    btn.disabled = false;
+    btn.textContent = '🔍 识别选中资产 CMS';
+  }
+}
+
+function showIdentificationProgress(total){
+  let progressDiv = document.getElementById('identification-progress');
+  if(!progressDiv){
+    progressDiv = document.createElement('div');
+    progressDiv.id = 'identification-progress';
+    progressDiv.className = 'scan-status';
+    progressDiv.innerHTML = '<div class="spinner"></div><span id="identification-progress-text">正在识别...</span>';
+    document.querySelector('.search-bar').after(progressDiv);
+  }
+  progressDiv.classList.remove('hidden');
+  document.getElementById('identification-progress-text').textContent = `正在识别 0/${total}...`;
+}
+
+async function pollIdentificationProgress(taskId){
+  try {
+    const resp = await fetch(`/api/assets/identify/${taskId}/progress`);
+    const data = await resp.json();
+    if(data.ok){
+      const progressText = document.getElementById('identification-progress-text');
+      if(progressText){
+        if(data.status === 'running'){
+          progressText.textContent = `正在识别 ${data.current}/${data.total}...`;
+          setTimeout(()=>pollIdentificationProgress(taskId), 1000);
+        } else if(data.status === 'completed'){
+          progressText.textContent = `识别完成！共 ${data.total} 个资产`;
+          setTimeout(()=>{
+            document.getElementById('identification-progress').classList.add('hidden');
+            reloadAssets(currentPage);
+          }, 2000);
+          identificationInProgress = false;
+          btn.disabled = false;
+          btn.textContent = '🔍 识别选中资产 CMS';
+        } else if(data.status === 'error'){
+          progressText.textContent = `识别出错: ${data.error || '未知错误'}`;
+          identificationInProgress = false;
+          btn.disabled = false;
+          btn.textContent = '🔍 识别选中资产 CMS';
+        }
+      }
+    }
+  } catch(e) {
+    console.error('Progress poll error:', e);
+    setTimeout(()=>pollIdentificationProgress(taskId), 2000);
+  }
+}
+
+async function importCSV(input){
+  const fd=new FormData(); fd.append('file',input.files[0]);
+  const resp=await fetch('/api/assets/csv',{method:'POST',body:fd});
+  const data=await resp.json();
+  if(data.ok){ alert(`导入完成：新增 ${data.imported}，更新 ${data.updated}`); loadDict(); reloadAssets(1); }
+  else alert('导入失败: '+(data.error||''));
+  input.value='';
+}
+
+function exportCSV(){
+  const f=getFilters(); const params=new URLSearchParams();
+  if(f.search)params.set('search',f.search);
+  if(f.country)params.set('country',f.country);
+  if(f.cms)params.set('cms',f.cms);
+  if(f.source)params.set('source',f.source);
+  if(f.tag)params.set('tag',f.tag);
+  f.tags.forEach(t=>params.append('tags',t));
+  location.href='/api/assets/export?'+params;
+}
+
+async function lookupWhois(){
+  const domain=document.getElementById('f-domain').value.trim();
+  if(!domain){ alert('请先填写域名'); return; }
+  const id=document.getElementById('f-id').value;
+  if(!id){ alert('请先保存资产再查询到期时间'); return; }
+  const btn=document.getElementById('whois-btn'); btn.disabled=true; btn.textContent='查询中…';
+  const resp=await fetch(`/api/assets/${id}/whois`);
+  const data=await resp.json();
+  btn.disabled=false; btn.textContent='查询到期时间';
+  if(data.ok && data.expiration_date){ document.getElementById('f-expiration').value=data.expiration_date; alert('到期时间: '+data.expiration_date); }
+  else alert('未查询到到期时间');
+}
+
+async function loadCVE(){
+  const id=document.getElementById('f-id').value;
+  if(!id){ alert('请先保存资产'); return; }
+  const btn=document.getElementById('cve-btn'); btn.disabled=true; btn.textContent='查询中…';
+  document.getElementById('cve-list').innerHTML='';
+  document.getElementById('vuln-hint').textContent='正在调用 NVD API 检索相关 CVE…';
+  const resp=await fetch(`/api/assets/${id}/cve`);
+  const data=await resp.json();
+  btn.disabled=false; btn.textContent='查询CVE';
+  if(!data.ok){
+    // server/cms 均为空时后端返回「请先完善资产指纹信息」
+    document.getElementById('vuln-hint').textContent='⚠️ '+(data.error||'查询失败');
+    return;
+  }
+  const list=data.cves||[];
+  const kws=(data.keywords||[]).join('、')||'（无可用关键词）';
+  if(!list.length){ document.getElementById('vuln-hint').textContent=`未找到相关CVE（检索词: ${kws}）。`; return; }
+  const high=list.filter(c=>c.cvss>=7).length;
+  document.getElementById('vuln-hint').textContent=`找到 ${list.length} 条相关CVE（检索词: ${kws}${high?`，其中高危 ${high} 条`:''}），已按 CVSS 评分排序：`;
+  document.getElementById('cve-list').innerHTML=list.map(c=>{
+    const cls=c.cvss>=7?'cve-high':(c.cvss>=4?'cve-medium':'cve-low');
+    return `<div class="cve-item ${cls}"><div class="cve-head"><b>${esc(c.id)}</b> <span class="cve-cvss">CVSS ${c.cvss!=null?c.cvss:'N/A'}</span> <span class="cve-date">${esc(c.published)}</span></div><div class="cve-desc">${esc(c.description)}</div></div>`;
+  }).join('');
+}
+
+/* open asset editor directly, e.g. from global search results (/assets?open=ID) */
+async function openFromQuery(){
+  const oid = new URLSearchParams(location.search).get('open');
+  if(!oid) return;
+  const resp = await fetch('/api/assets/'+oid);
+  const data = await resp.json();
+  if(data.ok && data.asset) editAsset(data.asset);
+  else alert('未找到该资产');
+}
+
+/* ================= Nuclei 被动扫描 ================= */
+let nucleiState = {
+  scope: null,        // {ids:[...]} or {use_current_page:true, filters...}
+  scopeText: '',
+  mode: 'visual',
+  taskId: null,
+  pollTimer: null,
+  running: false,
+};
+
+const NUCLEI_SEV_COLORS = {
+  critical:{bg:'#7f1d1d',fg:'#fff'}, high:{bg:'#dc2626',fg:'#fff'},
+  medium:{bg:'#ea580c',fg:'#fff'}, low:{bg:'#eab308',fg:'#fff'},
+  info:{bg:'#2563eb',fg:'#fff'}, unknown:{bg:'#64748b',fg:'#fff'},
+};
+
+function resetNucleiTab(){
+  const hint=document.getElementById('nuclei-hint');
+  if(hint) hint.textContent='执行 Nuclei 被动扫描后，发现的漏洞将保存在此处。扫描前会自动检测代理与出口 IP。';
+  const list=document.getElementById('nuclei-list');
+  if(list) list.innerHTML='';
+  const sum=document.getElementById('nuclei-sev-summary');
+  if(sum) sum.innerHTML='';
+}
+
+function escHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function renderNucleiChecks(list){
+  const color = {ok:'#16a34a', info:'#0369a1', warn:'#d97706', err:'#dc2626'};
+  const box=document.getElementById('nuclei-env-box');
+  box.innerHTML=(list||[]).map(c=>
+    `<div style="color:${color[c.level]||'#334155'};font-size:13px;line-height:1.8">${escHtml(c.text)}</div>`
+  ).join('')||'<span class="muted">检测中…</span>';
+}
+
+function buildNucleiScope(){
+  if(nucleiState.scope && nucleiState.scope.ids && nucleiState.scope.ids.length){
+    return {ids:nucleiState.scope.ids};
+  }
+  const f=getFilters();
+  return {
+    use_current_page:true,
+    page:currentPage, per_page:20,
+    sort:currentSort, order:currentOrder,
+    search:f.search||null, country:f.country||null,
+    cms:f.cms||null, source:f.source||null,
+    tag:f.tag||null, tags_multi:f.tags||[],
+  };
+}
+
+/* toolbar button: selected ids, else current page after confirm */
+function openNucleiModal(){
+  const ids=[...document.querySelectorAll('.asset-check:checked')].map(c=>parseInt(c.value));
+  if(!ids.length){
+    if(!confirm('未勾选资产，将扫描【当前页】全部资产（每页 20 条），是否继续？')) return;
+    nucleiState.scope=null;           // -> use_current_page
+    nucleiState.scopeText='扫描范围：当前筛选条件下的当前页资产（第 '+currentPage+' 页，每页 20 条）';
+  } else {
+    nucleiState.scope={ids};
+    nucleiState.scopeText=`扫描范围：已勾选的 ${ids.length} 个资产`;
+  }
+  openNucleiModalBox();
+}
+
+/* from asset detail modal: scan exactly this asset */
+function openNucleiModalForAsset(){
+  const id=parseInt(document.getElementById('f-id').value);
+  if(!id){ alert('请先保存资产再执行扫描'); return; }
+  const dom=document.getElementById('f-domain').value.trim()||('#'+id);
+  nucleiState.scope={ids:[id]};
+  nucleiState.scopeText=`扫描范围：资产「${dom}」`;
+  openNucleiModalBox();
+}
+
+function openNucleiModalBox(){
+  document.getElementById('nuclei-modal').classList.remove('hidden');
+  document.getElementById('nuclei-scope-text').textContent=nucleiState.scopeText||'扫描范围：当前页资产';
+  // reset panels / progress
+  document.getElementById('nuclei-progress').classList.add('hidden');
+  document.getElementById('nuclei-progress-sev').innerHTML='';
+  document.getElementById('nuclei-start-btn').disabled=true;
+  setNucleiMode('visual');
+  runNucleiEnvCheck();
+}
+
+function closeNucleiModal(){
+  if(nucleiState.pollTimer){ clearTimeout(nucleiState.pollTimer); nucleiState.pollTimer=null; }
+  document.getElementById('nuclei-modal').classList.add('hidden');
+}
+
+function setNucleiMode(mode){
+  nucleiState.mode=mode;
+  document.getElementById('mode-visual-btn').classList.toggle('active',mode==='visual');
+  document.getElementById('mode-advanced-btn').classList.toggle('active',mode==='advanced');
+  document.getElementById('nuclei-visual-panel').classList.toggle('hidden',mode!=='visual');
+  document.getElementById('nuclei-advanced-panel').classList.toggle('hidden',mode!=='advanced');
+}
+
+async function runNucleiEnvCheck(){
+  const box=document.getElementById('nuclei-env-box');
+  box.innerHTML='<span class="muted">⏳ 正在检测代理配置与出口 IP（最长约 20 秒）…</span>';
+  try{
+    const resp=await fetch('/api/nuclei/env-check');
+    const data=await resp.json();
+    if(!data.ok) throw new Error(data.error||'检测失败');
+    renderNucleiChecks(data.checks);
+    nucleiState.envReady=!!data.ready;
+    nucleiState.envInfo=data;
+    const btn=document.getElementById('nuclei-start-btn');
+    if(data.ready){
+      btn.disabled=false;
+      box.innerHTML+='<div style="color:#16a34a;font-size:13px;margin-top:4px">✅ 环境就绪，可以开始扫描。</div>';
+    } else {
+      btn.disabled=true;
+      box.innerHTML+='<div style="color:#dc2626;font-size:13px;margin-top:4px">❌ 环境预检未通过，已禁止扫描：请先修复代理配置或 Nuclei 安装，然后点击「重新检测」。</div>';
+    }
+  }catch(e){
+    box.innerHTML=`<div style="color:#dc2626;font-size:13px">环境检测请求失败: ${escHtml(e.message)}</div>`;
+    nucleiState.envReady=false;
+  }
+}
+
+async function startNucleiScan(){
+  if(nucleiState.running){ alert('扫描正在进行中'); return; }
+  if(!nucleiState.envReady){ alert('环境预检未通过，无法开始扫描'); return; }
+  const mode=nucleiState.mode;
+  const args=document.getElementById('nu-args').value.trim();
+  if(mode==='advanced' && !args){ alert('高级模式：请先输入 Nuclei 参数'); return; }
+
+  const scope=buildNucleiScope();
+  const body={
+    ...scope,
+    mode,
+    both_schemes:document.getElementById('nu-both-schemes').checked,
+    options:{
+      passive:document.getElementById('nu-passive').checked,
+      severity:document.getElementById('nu-severity').value.trim(),
+      tags:document.getElementById('nu-tags').value.trim(),
+      templates:document.getElementById('nu-templates').value.trim(),
+    },
+    args,
+  };
+
+  nucleiState.running=true;
+  const startBtn=document.getElementById('nuclei-start-btn');
+  startBtn.disabled=true; startBtn.textContent='扫描中…';
+  const prog=document.getElementById('nuclei-progress');
+  prog.classList.remove('hidden');
+  document.getElementById('nuclei-progress-text').textContent='正在发起扫描并执行环境预检…';
+  try{
+    const resp=await fetch('/api/nuclei/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data=await resp.json();
+    if(!data.ok){
+      // server-side preflight refused -> show colored checks
+      if(data.checks){ renderNucleiChecks(data.checks); nucleiState.envReady=false; }
+      document.getElementById('nuclei-progress-text').textContent='❌ '+(data.error||'扫描被拒绝');
+      document.getElementById('nuclei-progress-text').style.color='#dc2626';
+      nucleiState.running=false;
+      startBtn.disabled=false; startBtn.textContent='开始扫描';
+      return;
+    }
+    nucleiState.taskId=data.task_id;
+    if(data.exit_ip){
+      document.getElementById('nuclei-env-box').innerHTML+=
+        `<div style="color:#0369a1;font-size:13px;margin-top:4px">🌐 实际出口 IP：${escHtml(data.exit_ip)}（${data.exit_source==='proxy'?'经代理':'服务器公网直连'}）</div>`;
+    }
+    const txt=`已启动：${data.assets} 个资产 / ${data.targets} 个目标，正在执行 Nuclei${mode==='advanced'?'（高级模式）':'（可视化）'}扫描…`;
+    document.getElementById('nuclei-progress-text').textContent=txt;
+    document.getElementById('nuclei-progress-text').style.color='';
+    pollNucleiTask(data.task_id);
+  }catch(e){
+    document.getElementById('nuclei-progress-text').textContent='请求失败: '+e.message;
+    document.getElementById('nuclei-progress-text').style.color='#dc2626';
+    nucleiState.running=false;
+    startBtn.disabled=false; startBtn.textContent='开始扫描';
+  }
+}
+
+async function pollNucleiTask(taskId){
+  try{
+    const resp=await fetch('/api/nuclei/scan/'+taskId);
+    const data=await resp.json();
+    if(!data.ok){ throw new Error(data.error||'任务不存在'); }
+    const txt=document.getElementById('nuclei-progress-text');
+    const sevBox=document.getElementById('nuclei-progress-sev');
+    const total=data.findings_total||0;
+    if(data.status==='running'){
+      txt.textContent=`⏳ 扫描进行中… 已发现 ${total} 条结果`;
+      renderNucleiLiveSev(sevBox, data.by_severity||{});
+      nucleiState.pollTimer=setTimeout(()=>pollNucleiTask(taskId),1200);
+    } else if(data.status==='completed'){
+      txt.textContent=`✅ 扫描完成：共发现 ${total} 条结果`;
+      renderNucleiLiveSev(sevBox, data.by_severity||{});
+      if(data.notice){ txt.textContent+='　注意: '+data.notice; }
+      finishNucleiTask(true);
+    } else if(data.status==='stopped'){
+      txt.textContent=`🛑 已停止：发现 ${total} 条结果（已保存）`;
+      finishNucleiTask(true);
+    } else {
+      txt.textContent='❌ 扫描出错: '+(data.error||'未知错误');
+      txt.style.color='#dc2626';
+      if(data.notice) txt.textContent+='　'+data.notice;
+      finishNucleiTask(false);
+    }
+  }catch(e){
+    const txt=document.getElementById('nuclei-progress-text');
+    txt.textContent='轮询失败: '+e.message+'（将重试）';
+    nucleiState.pollTimer=setTimeout(()=>pollNucleiTask(taskId),3000);
+  }
+}
+
+function renderNucleiLiveSev(box, bySev){
+  if(!box) return;
+  box.innerHTML=Object.entries(bySev).map(([sev,n])=>{
+    const c=NUCLEI_SEV_COLORS[sev]||NUCLEI_SEV_COLORS.unknown;
+    return `<span class="sev-badge" style="background:${c.bg};color:${c.fg}">${escHtml(sev)}: ${n}</span>`;
+  }).join('');
+}
+
+function finishNucleiTask(ok){
+  nucleiState.running=false;
+  const startBtn=document.getElementById('nuclei-start-btn');
+  startBtn.disabled=false; startBtn.textContent='开始扫描';
+  if(ok){
+    document.getElementById('nuclei-start-btn').textContent='再次扫描';
+    // single-asset scan started from the detail modal: refresh that tab live
+    const id=parseInt(document.getElementById('f-id').value||'0');
+    if(id && nucleiState.scope && nucleiState.scope.ids && nucleiState.scope.ids.length===1 && nucleiState.scope.ids[0]===id){
+      if(!document.getElementById('tab-nuclei').classList.contains('hidden')) loadNucleiResults();
+    }
+  }
+}
+
+async function stopNucleiScan(){
+  if(!nucleiState.taskId) return;
+  await fetch('/api/nuclei/scan/'+nucleiState.taskId+'/stop',{method:'POST'});
+  document.getElementById('nuclei-progress-text').textContent='正在停止…';
+}
+
+async function loadNucleiResults(){
+  const id=parseInt(document.getElementById('f-id').value||'0');
+  const hint=document.getElementById('nuclei-hint');
+  const list=document.getElementById('nuclei-list');
+  const sumBox=document.getElementById('nuclei-sev-summary');
+  if(!id){ if(hint) hint.textContent='⚠️ 请先保存该资产，再查看 Nuclei 扫描结果。'; return; }
+  if(!hint||!list) return;
+  hint.textContent='正在加载…';
+  list.innerHTML='';
+  try{
+    const resp=await fetch('/api/assets/'+id+'/nuclei');
+    const data=await resp.json();
+    if(!data.ok){ hint.textContent='⚠️ '+(data.error||'加载失败'); return; }
+    const results=data.results||[];
+    const summary=data.summary||{};
+    const total=Object.values(summary).reduce((a,b)=>a+(b||0),0);
+    hint.textContent = total
+      ? `共 ${total} 条漏洞记录（来自 Nuclei 被动扫描）：`
+      : '暂无扫描结果：点击「扫描该资产」或到资产库勾选资产后执行 Nuclei 扫描。';
+    sumBox.innerHTML=Object.entries(summary).map(([sev,n])=>{
+      const c=NUCLEI_SEV_COLORS[sev]||NUCLEI_SEV_COLORS.unknown;
+      return `<span class="sev-badge" style="background:${c.bg};color:${c.fg}">${escHtml(sev)}: ${n}</span>`;
+    }).join('');
+    list.innerHTML=results.map(r=>{
+      const sev=r.severity||'unknown';
+      const c=NUCLEI_SEV_COLORS[sev]||NUCLEI_SEV_COLORS.unknown;
+      const host=r.host||r.matched_at||'';
+      const detail=[];
+      if(r.matched_at) detail.push(`<div class="nuclei-kv"><b>命中位置</b> ${escHtml(r.matched_at)}</div>`);
+      if(r.extracted_results) detail.push(`<div class="nuclei-kv"><b>提取内容</b> <code>${escHtml(r.extracted_results)}</code></div>`);
+      if(r.curl_command) detail.push(`<div class="nuclei-kv"><b>复现命令</b> <code>${escHtml(r.curl_command)}</code></div>`);
+      if(r.vuln_type) detail.push(`<div class="nuclei-kv"><b>关联编号</b> ${escHtml(r.vuln_type)}</div>`);
+      if(r.description) detail.push(`<div class="nuclei-desc">${escHtml(r.description)}</div>`);
+      return `<div class="cve-item">
+        <div class="cve-head">
+          <span class="sev-badge" style="background:${c.bg};color:${c.fg}">${escHtml(sev)}</span>
+          <b>${escHtml(r.template_name||r.template_id)}</b>
+          <span class="muted" style="font-size:12px">${escHtml(r.template_id||'')}</span>
+          <span class="cve-date">${escHtml((r.created_at||'').slice(0,16))}</span>
+        </div>
+        ${host?`<div class="nuclei-kv"><b>主机</b> ${escHtml(host)}</div>`:''}
+        ${detail.join('')}
+      </div>`;
+    }).join('');
+  }catch(e){
+    hint.textContent='⚠️ 加载失败: '+e.message;
+  }
+}
+
+async function clearNucleiResults(){
+  const id=parseInt(document.getElementById('f-id').value||'0');
+  if(!id) return;
+  if(!confirm('确认清除该资产的全部 Nuclei 扫描结果？')) return;
+  await fetch('/api/assets/'+id+'/nuclei',{method:'DELETE'});
+  resetNucleiTab();
+}
+
+/* ================= 轻量端口服务识别 ================= */
+async function scanPortsSelected(){
+  const btn=document.getElementById('port-scan-btn');
+  if(!btn || btn.disabled) return;
+  const ids=[...document.querySelectorAll('.asset-check:checked')].map(c=>parseInt(c.value));
+  let body;
+  if(ids.length){
+    body={ids};
+  }else{
+    if(!confirm('未勾选资产，将对【当前筛选条件下的当前页】资产（每页 20 条）执行轻量端口扫描，是否继续？')) return;
+    const f=getFilters();
+    body={use_current_page:true, page:currentPage, per_page:20, sort:currentSort, order:currentOrder,
+          search:f.search||null, country:f.country||null, cms:f.cms||null,
+          source:f.source||null, tag:f.tag||null, tags_multi:f.tags||[]};
+  }
+  const st=document.getElementById('port-scan-status');
+  st.classList.remove('hidden');
+  st.textContent='⏳ 正在执行轻量端口探测（每端口超时秒级，请稍候）…';
+  btn.disabled=true;
+  const old=btn.textContent; btn.textContent='⏳ 扫描中…';
+  try{
+    const resp=await fetch('/api/assets/scan-ports',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data=await resp.json();
+    if(!data.ok) throw new Error(data.error||'扫描失败');
+    const res=data.results||[];
+    const scanned=res.filter(r=>r.scanned);
+    const skipped=res.filter(r=>!r.scanned);
+    const openTotal=scanned.reduce((s,r)=>s+(r.open||0),0);
+    let msg='✅ 完成：扫描 '+scanned.length+' 个资产，共发现 '+openTotal+' 个开放端口';
+    if(skipped.length){
+      msg+='；跳过：'+skipped.slice(0,5).map(r=>r.domain||r.asset_id).join('、')+'（'+(skipped[0]&&skipped[0].skip_reason||'')+'）';
+    }
+    st.innerHTML=msg;
+    reloadAssets(currentPage);
+  }catch(e){
+    st.innerHTML='❌ '+escHtml(e.message||e);
+  }finally{
+    btn.disabled=false; btn.textContent=old;
+  }
+}
+
+async function loadPortServices(){
+  const id=parseInt(document.getElementById('f-id').value||'0');
+  const hint=document.getElementById('ports-hint');
+  const list=document.getElementById('ports-list');
+  if(!hint||!list) return;
+  if(!id){ hint.textContent='⚠️ 请先保存该资产。'; list.innerHTML=''; return; }
+  hint.textContent='正在加载…';
+  try{
+    const resp=await fetch('/api/assets/'+id+'/ports');
+    const data=await resp.json();
+    if(!data.ok){ hint.textContent='⚠️ '+(data.error||'加载失败'); return; }
+    const services=data.services||{};
+    const entries=Object.entries(services).sort((a,b)=>parseInt(a[0])-parseInt(b[0]));
+    if(data.scanned){
+      hint.innerHTML='上次扫描：<b>'+escHtml((data.ports_scanned_at||'').slice(0,19))+'</b>，开放端口 <b>'+entries.length+'</b> 个'+(data.ip?('（IP '+escHtml(data.ip)+'）'):'')+'。可随时强制重新扫描。';
+      list.innerHTML = entries.length
+        ? '<div class="nuclei-sev-summary">'+entries.map(([p,s])=>{
+            const txt=p+(s?': '+escHtml(s):'（开放·未识别）');
+            return '<span class="sev-badge" style="background:#ea580c;color:#fff;font-size:12px" title="'+escHtml(txt)+'">'+escHtml(txt)+'</span>';
+          }).join(' ')+'</div>'
+        : '<span class="muted">扫描已完成，但未发现开放端口（可能被防火墙过滤，或端口不在设置中的扫描列表里）。</span>';
+    }else{
+      hint.textContent='该资产尚未扫描端口。点击「扫描/重新扫描端口」执行轻量 TCP banner 探测（结果写入资产库，资产库列表同步刷新）。';
+      list.innerHTML='<span class="muted">（暂无结果）</span>';
+    }
+  }catch(e){
+    hint.textContent='⚠️ 加载失败: '+e.message;
+  }
+}
+
+async function scanCurrentAssetPorts(){
+  const id=parseInt(document.getElementById('f-id').value||'0');
+  if(!id){ alert('请先保存资产'); return; }
+  const btn=document.getElementById('ports-scan-btn');
+  btn.disabled=true;
+  const old=btn.textContent; btn.textContent='⏳ 扫描中…';
+  try{
+    const resp=await fetch('/api/assets/scan-ports',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids:[id],force:true})});
+    const data=await resp.json();
+    if(!data.ok) throw new Error(data.error||'扫描失败');
+    await loadPortServices();
+    reloadAssets(currentPage);
+  }catch(e){
+    alert('扫描失败: '+(e.message||e));
+  }finally{
+    btn.disabled=false; btn.textContent=old;
+  }
+}
+
+loadDict().then(openFromQuery);
+refreshTagUI();
+reloadAssets(1);
+</script>
+</body>
+</html>

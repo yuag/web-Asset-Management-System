@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>资产仪表盘 - Web 资产管理系统</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-brand">🛡️ Web 资产管理系统</div>
+  <div class="nav-links">
+    <a href="/" class="active">📊 仪表盘</a>
+    <a href="/search">🔍 全局搜索</a>
+    <a href="/scan">🚀 域名探索</a>
+    <a href="/assets">📦 资产库</a>
+    <a href="/txt-import">📄 TXT导入</a>
+    <a href="/graph">📊 资产图谱</a>
+    <a href="/ai">🤖 AI助手</a>
+    <a href="/settings">⚙️ 系统设置</a>
+  </div>
+  <form class="nav-search" onsubmit="quickSearch(event)">
+    <input type="text" id="nav-q" placeholder="快速搜索… 回车">
+  </form>
+</nav>
+
+<main class="container">
+  <h1>资产仪表盘</h1>
+
+  <div class="stat-cards">
+    <div class="stat-card"><div class="stat-num">{{ stats.total }}</div><div class="stat-label">总资产数</div></div>
+    <div class="stat-card"><div class="stat-num">{{ stats.root_domains }}</div><div class="stat-label">唯一根域数</div></div>
+    <div class="stat-card"><div class="stat-num">{{ stats.countries }}</div><div class="stat-label">涉及国家数</div></div>
+    <div class="stat-card"><div class="stat-num">{{ stats.cms_types }}</div><div class="stat-label">CMS类型数</div></div>
+    <div class="stat-card"><div class="stat-num">{{ stats.today_new }}</div><div class="stat-label">今日新增</div></div>
+  </div>
+
+  <div class="stat-cards">
+    <div class="stat-card change-card"><div class="stat-num green">{{ stats.today_added }}</div><div class="stat-label">今日新增变更</div></div>
+    <div class="stat-card change-card"><div class="stat-num orange">{{ stats.today_changed }}</div><div class="stat-label">今日属性变更</div></div>
+    <div class="stat-card change-card"><div class="stat-num red">{{ stats.today_disappeared }}</div><div class="stat-label">今日消失</div></div>
+  </div>
+
+  <div class="dashboard-grid">
+    <div class="chart-box"><h3>国家分布 (Top 10)</h3><div id="country-pie" style="width:100%;height:320px;"></div></div>
+    <div class="chart-box"><h3>CMS 类型分布 (Top 10)</h3><div id="cms-pie" style="width:100%;height:320px;"></div></div>
+    <div class="chart-box"><h3>来源分布</h3><div id="source-pie" style="width:100%;height:320px;"></div></div>
+    <div class="chart-box"><h3>每日新增趋势 (近7天)</h3><div id="trend-bar" style="width:100%;height:320px;"></div></div>
+  </div>
+
+  <div class="dashboard-grid">
+    <div class="chart-box">
+      <h3>标签云</h3>
+      <div class="tag-cloud">
+        {% if tags %}
+          {% for tag, count in tags.items() %}
+            <a class="tag-chip" href="/assets?tag={{ tag }}">{{ tag }} <span class="tag-count">{{ count }}</span></a>
+          {% endfor %}
+        {% else %}<p class="muted">暂无标签。</p>{% endif %}
+      </div>
+    </div>
+    <div class="chart-box">
+      <h3>最近变更动态</h3>
+      <div class="timeline">
+        {% if changelog %}
+          {% for c in changelog %}
+            <div class="timeline-item">
+              <span class="timeline-badge {{ c.change_type }}">{{ c.change_type }}</span>
+              <span class="timeline-domain">{{ c.domain }}</span>
+              <span class="timeline-time">{{ c.created_at[11:] if c.created_at else '' }}</span>
+              {% if c.changed_fields and c.changed_fields != '["*"]' %}
+                <span class="timeline-fields">{{ c.changed_fields }}</span>
+              {% endif %}
+            </div>
+          {% endfor %}
+        {% else %}<p class="muted">暂无变更记录。</p>{% endif %}
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+function quickSearch(e){ e.preventDefault(); const v=document.getElementById('nav-q').value.trim(); if(v) location.href='/search?q='+encodeURIComponent(v); }
+const stats = {{ stats | tojson }};
+
+function makePie(id, data, colors){
+  const chart = echarts.init(document.getElementById(id));
+  const arr = Object.entries(data).map(([k,v])=>({name:k, value:v}));
+  chart.setOption({
+    tooltip:{trigger:'item', formatter:'{b}: {c} ({d}%)'},
+    legend:{bottom:0, type:'scroll'},
+    series:[{type:'pie', radius:['35%','65%'], avoidLabelOverlap:true,
+      label:{show:true, formatter:'{b}\n{c}'},
+      data: arr.length ? arr : [{name:'暂无数据', value:1, itemStyle:{color:'#e5e7eb'}}]
+    }]
+  });
+}
+
+makePie('country-pie', stats.country_dist || {});
+makePie('cms-pie', stats.cms_dist || {});
+makePie('source-pie', stats.source_dist || {});
+
+const trendChart = echarts.init(document.getElementById('trend-bar'));
+const trend = stats.daily_trend || {};
+trendChart.setOption({
+  tooltip:{trigger:'axis'},
+  xAxis:{type:'category', data:Object.keys(trend), axisLabel:{rotate:30}},
+  yAxis:{type:'value', minInterval:1},
+  series:[{type:'bar', data:Object.values(trend), itemStyle:{color:'#2563eb'}}]
+});
+</script>
+</body>
+</html>

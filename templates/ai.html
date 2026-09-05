@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI助手 - Web 资产管理系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-brand">🛡️ Web 资产管理系统</div>
+  <div class="nav-links">
+    <a href="/">📊 仪表盘</a>
+    <a href="/search">🔍 全局搜索</a>
+    <a href="/scan">🚀 域名探索</a>
+    <a href="/assets">📦 资产库</a>
+    <a href="/txt-import">📄 TXT导入</a>
+    <a href="/graph">📊 资产图谱</a>
+    <a href="/ai" class="active">🤖 AI助手</a>
+    <a href="/settings">⚙️ 系统设置</a>
+  </div>
+  <form class="nav-search" onsubmit="quickSearch(event)">
+    <input type="text" id="nav-q" placeholder="快速搜索… 回车">
+  </form>
+</nav>
+
+<main class="chat-app">
+  <aside class="chat-sidebar">
+    <button id="new-chat-btn" class="btn-primary chat-new-btn">＋ 新建对话</button>
+    <div id="session-list" class="session-list"></div>
+  </aside>
+
+  <section class="chat-main">
+    <div class="chat-modelbar">
+      <span class="muted">模型：</span>
+      <select id="model-picker" title="本会话使用的模型（对之后发送的消息生效）"></select>
+      <span id="model-picker-status" class="muted"></span>
+    </div>
+    <div id="chat-messages" class="chat-messages"></div>
+
+    <div class="quick-commands">
+      <span class="muted">快捷指令：</span>
+      <button class="quick-btn" data-prompt="帮我查一下资产库中的资产">🔍 查资产</button>
+      <button class="quick-btn" data-prompt="扫描根域 example.com">🚀 扫域名</button>
+      <button class="quick-btn" data-prompt="查看当前资产统计">📊 看统计</button>
+      <button class="quick-btn" data-prompt="查询 example.com 的 CVE 漏洞">🛡️ 查漏洞</button>
+      <button class="quick-btn" data-prompt="导出资产报告">📄 导出报告</button>
+    </div>
+
+    <div class="chat-input-wrap">
+      <textarea id="chat-input" rows="1" placeholder="输入消息，回车发送，Shift+Enter 换行（在顶部选择模型；未配置时请先到系统设置 → AI 模型配置启用并填写 API Key）"></textarea>
+      <button id="send-btn" class="btn-primary chat-send-btn">发送</button>
+    </div>
+  </section>
+</main>
+
+<script>
+let currentSession = null;
+let busy = false;
+let pendingText = '';   // received from SSE, not yet typed out
+let rawShown = '';      // typed-out raw text of the current assistant bubble
+let curBubble = null;   // the assistant bubble being typed into
+let typeTimer = null;
+let modelProviders = [];   // enabled providers for the picker
+let modelDefaultKey = '';  // canonical key of the global default model
+
+const $ = id => document.getElementById(id);
+
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function quickSearch(e){ e.preventDefault(); const v=document.getElementById('nav-q').value.trim(); if(v) location.href='/search?q='+encodeURIComponent(v); }
+
+/* ---------- markdown-ish renderer (tables / code / bold / breaks) ---------- */
+function renderMd(text){
+  const codes = [];
+  let html = esc(text||'');
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (m,lang,code)=>{ codes.push(code); return '\u0000'+(codes.length-1)+'\u0000'; });
+  html = html.replace(/`([^`\n]+)`/g, (m,c)=>{ codes.push(c); return '\u0000'+(codes.length-1)+'\u0000'; });
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // tables: consecutive lines starting with |
+  html = html.replace(/(?:^\|.*\n?)+/gm, block=>{
+    const safe = block.replace(/\\\|/g, '\u0001');
+    const lines = safe.replace(/\n$/,'').split('\n');
+    const rows = lines.map(l=>l.replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>c.trim().replace(/\u0001/g,'|')));
+    const header = rows[0]||[];
+    const body = rows.slice(1).filter(r=>!(r.length===1 && /^[-:]+$/.test(r[0])));
+    const th = header.map(c=>'<th>'+c+'</th>').join('');
+    const trs = body.map(r=>'<tr>'+r.map(c=>'<td>'+c+'</td>').join('')+'</tr>').join('');
+    return '<table class="ai-table"><thead><tr>'+th+'</tr></thead><tbody>'+trs+'</tbody></table>';
+  });
+  html = html.replace(/\u0000(\d+)\u0000/g, (m,i)=>'<code class="ai-inline-code">'+codes[+i]+'</code>');
+  html = html.split('\n').join('<br>');
+  return html;
+}
+
+/* ---------- message rendering ---------- */
+function renderWelcome(){
+  const box = $('chat-messages');
+  box.innerHTML = '<div class="chat-welcome">' +
+    '<div class="chat-welcome-icon">🤖</div>' +
+    '<h2>AI 助手</h2>' +
+    '<p>用自然语言查询资产、扫描域名、查看统计、查询 CVE、导出报告。<br>' +
+    '例如：“帮我查一下有 WordPress 的资产”、“扫描 example.com”、“今天新增了多少资产？”</p>' +
+    '</div>';
+}
+
+function appendBubble(role, text){
+  const div = document.createElement('div');
+  div.className = 'chat-bubble ' + (role==='user' ? 'user' : 'assistant');
+  if(role==='user') div.textContent = text;
+  else div.innerHTML = renderMd(text);
+  $('chat-messages').appendChild(div);
+  scrollBottom();
+  return div;
+}
+
+/* small muted tag under an assistant bubble showing which model answered */
+function appendModelTag(bubble, modelKey){
+  if(!modelKey || !bubble) return;
+  const tag = document.createElement('div');
+  tag.className = 'msg-model';
+  tag.textContent = '🤖 ' + modelKey;
+  bubble.appendChild(tag);
+}
+
+function appendToolEvent(tool, summary, ok){
+  const div = document.createElement('div');
+  div.className = 'tool-event ' + (ok===false ? 'error' : '');
+  div.textContent = '🔧 调用工具「' + tool + '」' + (summary ? '：' + summary : '');
+  $('chat-messages').appendChild(div);
+  scrollBottom();
+}
+
+function clearThinking(){
+  document.querySelectorAll('.chat-thinking').forEach(el=>el.remove());
+}
+
+function showThinking(note){
+  clearThinking();
+  const div = document.createElement('div');
+  div.className = 'chat-thinking';
+  div.textContent = '⏳ ' + (note||'思考中…');
+  $('chat-messages').appendChild(div);
+  scrollBottom();
+}
+
+function scrollBottom(){
+  const box = $('chat-messages');
+  box.scrollTop = box.scrollHeight;
+}
+
+/* ---------- typewriter ---------- */
+function feedDelta(delta){
+  pendingText += delta;
+  if(!typeTimer){
+    typeTimer = setInterval(()=>{
+      if(!pendingText){
+        clearInterval(typeTimer); typeTimer=null;
+        if(curBubble) curBubble.innerHTML = renderMd(rawShown);
+        return;
+      }
+      if(!curBubble){
+        curBubble = document.createElement('div');
+        curBubble.className = 'chat-bubble assistant';
+        $('chat-messages').appendChild(curBubble);
+      }
+      const take = Math.min(pendingText.length, 12);
+      rawShown += pendingText.slice(0, take);
+      pendingText = pendingText.slice(take);
+      curBubble.innerHTML = renderMd(rawShown) + (pendingText ? '<span class="typing-cursor">▍</span>' : '');
+      scrollBottom();
+    }, 10);
+  }
+}
+
+function stopTyping(){
+  if(typeTimer){ clearInterval(typeTimer); typeTimer=null; }
+  if(pendingText){
+    // flush anything still buffered so no answer text is ever lost
+    if(curBubble){ rawShown += pendingText; curBubble.innerHTML = renderMd(rawShown); }
+    else appendBubble('assistant', pendingText);
+  }
+  pendingText=''; rawShown=''; curBubble=null;
+  clearThinking();
+}
+
+/* ---------- confirmation bar for dangerous operations ---------- */
+function appendConfirmBar(ev){
+  const div = document.createElement('div');
+  div.className = 'confirm-bar';
+  div.innerHTML = '<div class="confirm-title">⚠️ 危险操作确认</div>' +
+    '<div class="confirm-preview">' + esc(ev.preview||'') + '</div>' +
+    '<div class="confirm-actions">' +
+    '<button class="btn-primary confirm-yes">✅ 确认执行</button> ' +
+    '<button class="btn-outline confirm-no">❌ 拒绝</button>' +
+    '</div>';
+  $('chat-messages').appendChild(div);
+  scrollBottom();
+  div.querySelector('.confirm-yes').onclick = ()=>sendConfirm(true, ev.confirm_id, div);
+  div.querySelector('.confirm-no').onclick = ()=>sendConfirm(false, ev.confirm_id, div);
+}
+
+/* ---------- SSE consumption ---------- */
+async function consumeSSE(resp){
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while(true){
+    const {done, value} = await reader.read();
+    if(done) break;
+    buf += decoder.decode(value, {stream:true});
+    let idx;
+    while((idx = buf.indexOf('\n\n')) !== -1){
+      const raw = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      if(!raw.startsWith('data: ')) continue;
+      let ev;
+      try{ ev = JSON.parse(raw.slice(6)); }catch(e){ continue; }
+      handleEvent(ev);
+    }
+  }
+}
+
+function handleEvent(ev){
+  switch(ev.type){
+    case 'thinking':
+      showThinking(ev.note);
+      break;
+    case 'tool_start':
+      // a long tool (e.g. domain scan) is running: show it, keep the last
+      // tool event line highlighted until the result arrives
+      clearThinking();
+      appendToolEvent(ev.tool, '执行中…（可能耗时较长，请稍候）');
+      break;
+    case 'tool_result':
+      clearThinking();
+      // replace the stale 'running' line for the same tool if it's the last one
+      const events = document.querySelectorAll('.tool-event');
+      const last = events[events.length - 1];
+      if(last && last.textContent.includes('「' + ev.tool + '」') && last.textContent.includes('执行中')) last.remove();
+      appendToolEvent(ev.tool, ev.summary, ev.ok);
+      break;
+    case 'needs_confirmation':
+      clearThinking();
+      appendConfirmBar(ev);
+      break;
+    case 'text_delta':
+      clearThinking();
+      feedDelta(ev.delta);
+      break;
+    case 'error':
+      stopTyping();
+      appendBubble('assistant', '⚠️ ' + (ev.message||'出错了'));
+      break;
+    case 'done':
+      stopTyping();
+      break;
+  }
+}
+
+async function sendMessage(){
+  const input = $('chat-input');
+  const text = input.value.trim();
+  if(!text || busy) return;
+  if(!currentSession) await newSession();
+  if(!currentSession) return;
+  busy = true;
+  const btn = $('send-btn');
+  btn.disabled = true; btn.textContent = '…';
+  appendBubble('user', text);
+  input.value = '';
+  autoResize();
+  clearThinking();
+  const resp = await fetch('/api/ai/chat',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({session_id: currentSession, message: text})
+  });
+  if(!resp.ok){
+    let err = '请求失败';
+    try{ const d = await resp.json(); err = d.error||err; }catch(e){}
+    stopTyping();
+    appendBubble('assistant', '⚠️ ' + err);
+  }else{
+    await consumeSSE(resp);
+  }
+  busy = false;
+  btn.disabled = false; btn.textContent = '发送';
+  loadSessions(currentSession);
+}
+
+async function sendConfirm(approve, confirmId, bar){
+  if(busy) return;
+  busy = true;
+  const actions = bar.querySelector('.confirm-actions');
+  actions.innerHTML = '<span class="muted">' + (approve ? '执行中…' : '处理中…') + '</span>';
+  const resp = await fetch('/api/ai/confirm',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({session_id: currentSession, confirm_id: confirmId, approve})
+  });
+  if(!resp.ok){
+    actions.innerHTML = '<span style="color:#dc2626">确认失败</span>';
+  }else{
+    await consumeSSE(resp);
+    actions.innerHTML = '<span class="muted">' + (approve ? '✅ 已执行' : '❌ 已拒绝') + '</span>';
+  }
+  busy = false;
+  loadSessions(currentSession);
+}
+
+/* ---------- sessions ---------- */
+async function loadSessions(selectId){
+  const resp = await fetch('/api/ai/sessions');
+  const data = await resp.json();
+  const list = $('session-list');
+  list.innerHTML = '';
+  (data.sessions||[]).forEach(s=>{
+    const item = document.createElement('div');
+    item.className = 'session-item' + (s.session_id===selectId ? ' active':'');
+    item.innerHTML = '<span class="session-title">' + esc(s.title||'新对话') + '</span>' +
+      '<span class="session-del" title="删除会话">🗑</span>';
+    item.onclick = ()=>openSession(s.session_id);
+    item.querySelector('.session-del').onclick = async e=>{
+      e.stopPropagation();
+      if(!confirm('删除该会话及其全部记录？')) return;
+      await fetch('/api/ai/sessions/'+s.session_id,{method:'DELETE'});
+      if(currentSession===s.session_id){ currentSession=null; stopTyping(); renderWelcome(); }
+      loadSessions();
+    };
+    list.appendChild(item);
+  });
+}
+
+async function newSession(){
+  if(busy) return;
+  const resp = await fetch('/api/ai/sessions',{method:'POST'});
+  const data = await resp.json();
+  if(data.ok){
+    await openSession(data.session.session_id);
+    // if the user picked a concrete model, apply it to the brand-new session
+    const picker = $('model-picker');
+    if(picker && picker.value && picker.value!==modelDefaultKey){
+      await fetch('/api/ai/sessions/'+data.session.session_id+'/model',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({model: picker.value})
+      });
+    }
+  }
+}
+
+async function openSession(sessionId){
+  if(busy) return;
+  currentSession = sessionId;
+  stopTyping();
+  loadSessions(sessionId);
+  const resp = await fetch('/api/ai/sessions/'+sessionId);
+  const data = await resp.json();
+  const box = $('chat-messages');
+  box.innerHTML = '';
+  const sessModel = (data.ok && data.session) ? (data.session.model||'') : '';
+  if(!data.ok || !(data.messages||[]).length){ renderWelcome(); applyPickerForSession(sessModel); return; }
+  (data.messages||[]).forEach(m=>{
+    if(m.role==='user') appendBubble('user', m.content);
+    else if(m.role==='assistant'){
+      if(m.tool_calls && m.tool_calls.length){
+        (m.tool_calls||[]).forEach(tc=>{
+          const fn = (tc.function||{}).name||'tool';
+          appendToolEvent(fn, '工具调用（等待结果）');
+        });
+        if(m.content) appendModelTag(appendBubble('assistant', m.content), m.model);
+      }else if(m.content){
+        appendModelTag(appendBubble('assistant', m.content), m.model);
+      }
+    }
+  });
+  scrollBottom();
+  applyPickerForSession(sessModel);
+}
+
+function autoResize(){
+  const ta = $('chat-input');
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 140) + 'px';
+}
+
+/* ---------- model picker ---------- */
+async function loadModels(){
+  const picker = $('model-picker');
+  if(!picker) return;
+  try{
+    const resp = await fetch('/api/ai/models');
+    const data = await resp.json();
+    if(!data.ok) throw new Error('load failed');
+    modelProviders = data.providers||[];
+    modelDefaultKey = data.default||'';
+  }catch(e){
+    modelProviders = []; modelDefaultKey = '';
+  }
+  renderPicker();
+}
+
+function renderPicker(){
+  const picker = $('model-picker');
+  if(!picker) return;
+  const prev = picker.value;
+  picker.innerHTML = '';
+  if(!modelProviders.length){
+    const o = document.createElement('option');
+    o.value = ''; o.textContent = '（未启用任何模型，请先到系统设置配置）';
+    picker.appendChild(o);
+    picker.disabled = true;
+    const st = $('model-picker-status');
+    if(st) st.textContent = '系统设置 → AI 模型配置';
+    return;
+  }
+  picker.disabled = false;
+  // default option = follow the session/global default
+  const dfl = document.createElement('option');
+  dfl.value = '';
+  dfl.textContent = '默认模型（' + labelOf(modelDefaultKey) + '）';
+  picker.appendChild(dfl);
+  modelProviders.forEach(p=>{
+    const g = document.createElement('optgroup');
+    g.label = (p.display_name||p.name);
+    (p.models||[]).forEach(m=>{
+      const o = document.createElement('option');
+      o.value = p.name + ':' + m;
+      o.textContent = m + (p.speed_tier ? '  ['+p.speed_tier+']' : '');
+      if(p.note) o.title = p.note;
+      g.appendChild(o);
+    });
+    picker.appendChild(g);
+  });
+  if(prev) picker.value = prev;
+  const st = $('model-picker-status');
+  if(st) st.textContent = '';
+}
+
+function labelOf(key){
+  if(!key) return '未配置';
+  const idx = key.indexOf(':');
+  const pname = idx>0 ? key.slice(0,idx) : key;
+  const model = idx>0 ? key.slice(idx+1) : '';
+  const p = modelProviders.find(x=>x.name===pname);
+  return (p? p.display_name||pname : pname) + (model ? ' — '+model : '');
+}
+
+function applyPickerForSession(sessModel){
+  const picker = $('model-picker');
+  if(!picker || picker.disabled) return;
+  picker.value = sessModel || '';
+  const st = $('model-picker-status');
+  if(st) st.textContent = sessModel ? '' : '（跟随系统默认）';
+}
+
+async function changeSessionModel(){
+  const picker = $('model-picker');
+  if(!currentSession || !picker) return;
+  const st = $('model-picker-status');
+  if(st) st.textContent = '保存中…';
+  const resp = await fetch('/api/ai/sessions/'+currentSession+'/model',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({model: picker.value})
+  });
+  const data = await resp.json();
+  if(!data.ok){
+    if(st) st.textContent = '设置失败：' + (data.error||'未知错误');
+    applyPickerForSession('');
+    return;
+  }
+  if(st) st.textContent = picker.value ? '' : '（跟随系统默认）';
+}
+
+/* ---------- init ---------- */
+$('new-chat-btn').onclick = newSession;
+$('send-btn').onclick = sendMessage;
+$('chat-input').addEventListener('keydown', e=>{
+  if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendMessage(); }
+});
+$('chat-input').addEventListener('input', autoResize);
+$('model-picker').addEventListener('change', changeSessionModel);
+document.querySelectorAll('.quick-btn').forEach(btn=>{
+  btn.onclick = ()=>{
+    if(busy) return;
+    const input = $('chat-input');
+    input.value = btn.dataset.prompt || '';
+    input.focus();
+    autoResize();
+  };
+});
+
+(async function init(){
+  await loadModels();
+  await loadSessions();
+  const sessions = document.querySelectorAll('.session-item');
+  if(!sessions.length){
+    await newSession();
+  }else{
+    sessions[0].click();
+  }
+})();
+</script>
+</body>
+</html>

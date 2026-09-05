@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>资产图谱 - Web 资产管理系统</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-brand">🛡️ Web 资产管理系统</div>
+  <div class="nav-links">
+    <a href="/">📊 仪表盘</a>
+    <a href="/search">🔍 全局搜索</a>
+    <a href="/scan">🚀 域名探索</a>
+    <a href="/assets">📦 资产库</a>
+    <a href="/txt-import">📄 TXT导入</a>
+    <a href="/graph" class="active">📊 资产图谱</a>
+    <a href="/ai">🤖 AI助手</a>
+    <a href="/settings">⚙️ 系统设置</a>
+  </div>
+  <form class="nav-search" onsubmit="quickSearch(event)">
+    <input type="text" id="nav-q" placeholder="快速搜索… 回车">
+  </form>
+</nav>
+
+<main class="container">
+  <h1>资产图谱</h1>
+  <p class="muted">按「根域 → 子域名 → IP → 服务/端口」展示资产关系。拖动可平移，滚轮缩放；点击子域名打开资产详情，点击 IP / 服务节点查看端口与扫描状态。</p>
+
+  <style>
+    .graph-legend{display:flex;gap:14px;align-items:center;font-size:12px;color:var(--muted)}
+    .graph-legend span{display:inline-flex;align-items:center;gap:4px}
+    .dot{display:inline-block;width:10px;height:10px;border-radius:50%}
+    .dot-root{background:#dc2626}.dot-sub{background:#2563eb}
+    .dot-ip{background:#16a34a}.dot-svc{background:#ea580c}
+  </style>
+
+  <div class="search-bar" style="margin:14px 0">
+    <input type="text" id="graph-domain" placeholder="输入根域，如 example.com（留空显示 Top 10 根域拓扑）">
+    <button onclick="doQuery()" class="btn-primary">查询图谱</button>
+    <button onclick="clearQuery()" class="btn-outline">重置</button>
+    <div class="graph-legend">
+      <span><i class="dot dot-root"></i>根域</span>
+      <span><i class="dot dot-sub"></i>子域名</span>
+      <span><i class="dot dot-ip"></i>IP</span>
+      <span><i class="dot dot-svc"></i>服务/端口</span>
+    </div>
+  </div>
+  <div id="graph-info" class="muted" style="margin-bottom:8px"></div>
+  <div class="chart-box">
+    <div id="graph-chart" style="width:100%;height:68vh;min-height:420px"></div>
+  </div>
+</main>
+
+<!-- IP 详情弹窗：端口/服务 + 扫描入口 -->
+<div id="ip-modal" class="modal hidden">
+  <div class="modal-content modal-lg">
+    <h3 id="ip-modal-title">IP 端口与服务</h3>
+    <p class="muted">来自轻量 TCP 端口识别（仅 banner 探测，无攻击性）。</p>
+    <div id="ip-modal-body" class="cve-list"><span class="muted">加载中…</span></div>
+    <div class="modal-actions">
+      <button onclick="closeIpModal()" class="btn-primary">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function quickSearch(e){ e.preventDefault(); const v=document.getElementById('nav-q').value.trim(); if(v) location.href='/search?q='+encodeURIComponent(v); }
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+const CATS = ['root','subdomain','ip','service'];
+const CAT_COLOR = {root:'#dc2626', subdomain:'#2563eb', ip:'#16a34a', service:'#ea580c'};
+const CAT_LABEL = {root:'根域', subdomain:'子域名', ip:'IP', service:'服务/端口'};
+let chart = null;
+
+function initChart(){
+  if(chart) return;
+  chart = echarts.init(document.getElementById('graph-chart'));
+  chart.on('click', p=>{
+    const d = p && p.data;
+    if(!d) return;
+    if(d.type==='subdomain' && d.asset_id){ location.href='/assets?open='+d.asset_id; }
+    else if(d.type==='ip'){ openIpModal(d.name); }
+    else if(d.type==='service' && d.ip){ openIpModal(d.ip); }
+  });
+  window.addEventListener('resize', ()=>chart && chart.resize());
+}
+
+async function doQuery(){
+  const domain = document.getElementById('graph-domain').value.trim().toLowerCase().replace(/^\*\./,'');
+  const info = document.getElementById('graph-info');
+  info.textContent = '加载图谱中…';
+  try{
+    const resp = await fetch('/api/assets/graph' + (domain ? '?domain='+encodeURIComponent(domain) : ''));
+    const data = await resp.json();
+    if(!data.ok) throw new Error(data.error||'加载失败');
+    renderGraph(data, domain);
+  }catch(e){
+    info.textContent = '❌ ' + e.message;
+  }
+}
+
+function renderGraph(data, domain){
+  const info = document.getElementById('graph-info');
+  const nodes = data.nodes||[];
+  const edges = data.edges||[];
+  if(!nodes.length){
+    info.textContent = domain
+      ? '未找到根域「'+domain+'」下的资产（请确认已在域名探索中导入该根域的资产）。'
+      : '资产库为空或尚无带根域的资产，请先扫描导入。';
+    if(chart) chart.clear();
+    return;
+  }
+  const mode = domain ? ('根域「'+domain+'」') : ('Top ' + (data.roots||[]).length + ' 根域');
+  info.innerHTML = mode + '：共 ' + data.asset_count + ' 个资产 / ' +
+    (data.roots||[]).reduce((s,r)=>s+(r.count||0),0) + ' 个总资产，绘制 ' + nodes.length + ' 个节点 / ' +
+    edges.length + ' 条关系。' +
+    '<span class="dot-root" style="margin-left:10px"></span>' +
+    '<span class="dot-sub"></span><span class="dot-ip"></span><span class="dot-svc"></span>' +
+    (data.truncated ? '　<span style="color:#ea580c">⚠️ 资产过多，仅展示前 '+nodes.length+' 个节点（可输入更精确的根域缩小范围）。</span>' : '');
+  const gdata = nodes.map(n=>({
+    id:n.id, name:n.name, type:n.type, asset_id:n.asset_id,
+    ip:n.ip, port:n.port, category:CATS.indexOf(n.type),
+    symbolSize:n.type==='root'?40:n.type==='subdomain'?26:n.type==='ip'?20:14,
+    itemStyle:{color:CAT_COLOR[n.type]||'#64748b'},
+  }));
+  chart.setOption({
+    tooltip:{
+      formatter(p){
+        const d=p.data||{};
+        const label = CAT_LABEL[d.type]||d.type||'';
+        let extra='';
+        if(d.type==='ip' || d.type==='service'){
+          extra = '<br><span style="color:#0369a1">点击查看该 IP 的端口/服务与扫描状态</span>';
+        } else if(d.type==='subdomain'){
+          extra = '<br><span style="color:#0369a1">点击打开资产详情</span>';
+        }
+        return '<b>'+esc(d.name||'')+'</b><br>类型：'+esc(label)+extra;
+      }
+    },
+    legend:{top:0, data:['根域','子域名','IP','服务'], textStyle:{fontSize:12}},
+    series:[{
+      type:'graph', layout:'force', data:gdata, edges,
+      categories:[{name:'根域'},{name:'子域名'},{name:'IP'},{name:'服务'}],
+      roam:true, draggable:true,
+      label:{show:true, position:'right', fontSize:10, color:'#334155',
+             formatter(p){ return (p.data.type==='root'||p.data.type==='service') ? p.data.name : ''; }},
+      emphasis:{label:{show:true, fontSize:12, fontWeight:'bold', color:'#0f172a'}},
+      force:{repulsion:220, gravity:0.12, edgeLength:[40,140], layoutAnimation:true},
+      lineStyle:{color:'#94a3b8', width:1, curveness:0.18},
+      edgeSymbol:['none','arrow'], edgeSymbolSize:6,
+    }],
+  }, true);
+}
+
+function clearQuery(){ document.getElementById('graph-domain').value=''; doQuery(); }
+
+/* ---------- IP modal ---------- */
+let ipModalState = {ip:'', scanning:false};
+
+function openIpModal(ip){
+  if(!ip) return;
+  ipModalState = {ip, scanning:false};
+  document.getElementById('ip-modal-title').textContent = '🔌 IP 端口与服务：'+ip;
+  document.getElementById('ip-modal').classList.remove('hidden');
+  loadIpModal();
+}
+
+function closeIpModal(){ document.getElementById('ip-modal').classList.add('hidden'); }
+
+async function loadIpModal(){
+  const ip = ipModalState.ip;
+  const box = document.getElementById('ip-modal-body');
+  box.innerHTML = '<span class="muted">加载中…</span>';
+  let assets = [];
+  try{
+    const resp = await fetch('/api/assets/by-ip/'+encodeURIComponent(ip));
+    const data = await resp.json();
+    if(!data.ok) throw new Error(data.error||'加载失败');
+    assets = data.assets||[];
+  }catch(e){
+    box.innerHTML = '<div style="color:#dc2626">加载失败: '+esc(e.message)+'</div>';
+    return;
+  }
+  if(!assets.length){
+    box.innerHTML = '<span class="muted">该 IP 没有关联资产。</span>';
+    return;
+  }
+  // aggregate unique port -> service across all assets on this IP
+  const agg = {};
+  assets.forEach(a=>Object.entries(a.service_map||{}).forEach(([p,s])=>{ if(!(p in agg)) agg[p]=s; }));
+  const scannedAll = assets.every(a=>a.ports_scanned_at);
+  const openPorts = Object.keys(agg).sort((a,b)=>parseInt(a)-parseInt(b));
+  let html = '';
+  html += '<div class="nuclei-sev-summary">';
+  if(openPorts.length){
+    html += openPorts.map(p=>{
+      const s = agg[p]||'';
+      return '<span class="sev-badge" style="background:#ea580c;color:#fff;font-weight:600">'+esc(p)+(s?': '+esc(s):'')+'</span>';
+    }).join(' ') + '</div>';
+  } else {
+    html += '<span class="muted">无开放端口记录。</span></div>';
+  }
+  if(!scannedAll){
+    html += '<div style="color:#ea580c;font-size:13px;margin:6px 0">⚠️ 该 IP 下部分资产尚未执行端口扫描。</div>';
+  }
+  html += '<table class="asset-table" style="margin-top:8px"><thead><tr><th>资产</th><th>端口</th><th>服务</th><th>最近扫描</th><th>操作</th></tr></thead><tbody>';
+  assets.forEach(a=>{
+    const m = a.service_map||{};
+    const ps = Object.keys(m).sort((x,y)=>parseInt(x)-parseInt(y));
+    const svcTip = ps.map(p=>p+(m[p]?': '+m[p]:'')).join(' | ');
+    const scanned = a.ports_scanned_at;
+    html += '<tr><td>'+esc(a.domain)+'</td>' +
+      '<td>'+(ps.length?esc(ps.join(', ')):'<span class="muted">-</span>')+'</td>' +
+      '<td title="'+esc(svcTip)+'">'+(ps.length?esc(ps.map(p=>m[p]||p).join(', ')):'<span class="muted">未扫描</span>')+'</td>' +
+      '<td class="muted">'+(scanned?esc(String(scanned).slice(0,16)):'<span style="color:#ea580c">未扫描</span>')+'</td>' +
+      '<td><button class="link-btn" onclick="location.href=\'/assets?open='+a.id+'\'">详情</button></td></tr>';
+  });
+  html += '</tbody></table>';
+  html += '<div class="modal-actions" style="justify-content:flex-start;margin-top:10px">' +
+    '<button class="btn-primary" onclick="scanIpPorts()" id="ip-scan-btn">🔌 立即扫描该 IP 全部资产</button>' +
+    '<span class="muted">手动扫描（忽略 24 小时去重），仅 banner 探测</span></div>';
+  box.innerHTML = html;
+}
+
+async function scanIpPorts(){
+  if(ipModalState.scanning) return;
+  const ip = ipModalState.ip;
+  ipModalState.scanning = true;
+  const btn = document.getElementById('ip-scan-btn');
+  if(btn){ btn.disabled=true; btn.textContent='⏳ 扫描中（每端口最长 '+3+' 秒）…'; }
+  try{
+    const resp = await fetch('/api/assets/by-ip/'+encodeURIComponent(ip));
+    const data = await resp.json();
+    const ids = (data.assets||[]).map(a=>a.id);
+    if(!ids.length) throw new Error('无资产可扫描');
+    const r2 = await fetch('/api/assets/scan-ports',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ids, force:true})});
+    const res = await r2.json();
+    if(!res.ok) throw new Error(res.error||'扫描失败');
+    loadIpModal();
+    // refresh the graph afterwards so new service nodes appear
+    doQuery();
+  }catch(e){
+    const box = document.getElementById('ip-modal-body');
+    box.innerHTML = '<div style="color:#dc2626">扫描失败: '+esc(e.message)+'</div>' + box.innerHTML;
+  }finally{
+    ipModalState.scanning = false;
+  }
+}
+
+/* ---------- init ---------- */
+(function(){
+  const q = new URLSearchParams(location.search).get('domain')||'';
+  document.getElementById('graph-domain').value = q;
+  document.getElementById('graph-domain').addEventListener('keydown', e=>{ if(e.key==='Enter') doQuery(); });
+  initChart();
+  doQuery();
+})();
+</script>
+</body>
+</html>

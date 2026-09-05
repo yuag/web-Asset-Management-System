@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>域名探索 - Web 资产管理系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-brand">🛡️ Web 资产管理系统</div>
+  <div class="nav-links">
+    <a href="/">📊 仪表盘</a>
+    <a href="/search">🔍 全局搜索</a>
+    <a href="/scan" class="active">🚀 域名探索</a>
+    <a href="/assets">📦 资产库</a>
+    <a href="/txt-import">📄 TXT导入</a>
+    <a href="/graph">📊 资产图谱</a>
+    <a href="/ai">🤖 AI助手</a>
+    <a href="/settings">⚙️ 系统设置</a>
+  </div>
+  <form class="nav-search" onsubmit="quickSearch(event)">
+    <input type="text" id="nav-q" placeholder="快速搜索… 回车" list="tag-suggest">
+  </form>
+</nav>
+
+<main class="container">
+  <h1>域名探索</h1>
+  <p class="muted">输入根域，系统调用 crt.sh + crt.name + FOFA 自动发现子域名，智能合并去重并打标签。</p>
+
+  <div class="scan-box">
+    <input type="text" id="domain-input" placeholder="example.com" autocomplete="off">
+    <input type="text" id="scan-tags" class="scan-tags" placeholder="标签（可选，多个用逗号分隔，如 项目A,核心资产）" list="tag-suggest" autocomplete="off">
+    <button id="scan-btn" onclick="startScan()">开始扫描</button>
+  </div>
+  <datalist id="tag-suggest"></datalist>
+
+  <div id="scan-status" class="scan-status hidden">
+    <div class="spinner"></div>
+    <span id="scan-status-text">正在扫描……</span>
+  </div>
+
+  <div id="scan-summary" class="scan-summary hidden"></div>
+
+  <div id="results-section" class="hidden">
+    <div class="results-toolbar">
+      <h3>扫描结果</h3>
+      <div class="results-actions">
+        <label><input type="checkbox" id="select-all" onchange="toggleAll(this)"> 全选</label>
+        <button onclick="importSelected()" class="btn-primary">一键导入选中资产</button>
+        <button onclick="importAll()" class="btn-outline">全部导入</button>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table class="asset-table" id="results-table">
+        <thead><tr>
+          <th><input type="checkbox" id="select-all-top" onchange="toggleAll(this)"></th>
+          <th>域名</th><th>IP</th><th>端口</th><th>标题</th><th>国家</th><th>来源</th><th>状态</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+let discovered = [];
+const fofaEnabled = {{ ((conf.fofa_email|length) > 0 and (conf.fofa_api_key|length) > 0) | tojson }};
+
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function quickSearch(e){ e.preventDefault(); const v=document.getElementById('nav-q').value.trim(); if(v) location.href='/search?q='+encodeURIComponent(v); }
+
+/* fill tag autocomplete from existing tags */
+async function loadTagSuggest(){
+  try{
+    const resp=await fetch('/api/tags');
+    const data=await resp.json();
+    if(data.ok){
+      document.getElementById('tag-suggest').innerHTML = Object.keys(data.tags||{}).map(t=>`<option value="${esc(t)}">`).join('');
+    }
+  }catch(e){}
+}
+
+async function startScan(){
+  const domain = document.getElementById('domain-input').value.trim();
+  if(!domain){ alert('请输入根域'); return; }
+  const tagsVal = document.getElementById('scan-tags').value.trim();
+  const tags = tagsVal ? tagsVal.split(/[,，、]/).map(s=>s.trim()).filter(Boolean) : [];
+  const btn = document.getElementById('scan-btn');
+  btn.disabled = true;
+  const status = document.getElementById('scan-status');
+  const statusText = document.getElementById('scan-status-text');
+  status.classList.remove('hidden');
+  document.getElementById('scan-summary').classList.add('hidden');
+  document.getElementById('results-section').classList.add('hidden');
+  const dots=['.','..','...']; let i=0;
+  const timer = setInterval(()=>{
+    const note = fofaEnabled ? '正在调用 crt.sh + crt.name + FOFA' : '正在调用 crt.sh + crt.name（未配置 FOFA）';
+    statusText.textContent = note + ' 扫描中' + dots[i++%3];
+  },400);
+  try{
+    const resp = await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domain, tags})});
+    const data = await resp.json();
+    clearInterval(timer); status.classList.add('hidden'); btn.disabled=false;
+    if(!data.ok){ alert('扫描失败: '+(data.error||'')); return; }
+    discovered = data.discovered||[];
+    renderSummary(data.summary); renderResults();
+  }catch(e){
+    clearInterval(timer); status.classList.add('hidden'); btn.disabled=false;
+    alert('请求出错: '+e.message);
+  }
+}
+
+function renderSummary(s){
+  const el=document.getElementById('scan-summary');
+  el.classList.remove('hidden');
+  let html=`crt.sh 发现 <b>${s.crtsh_count}</b> 条 · crt.name 发现 <b>${s.crtname_count||0}</b> 条 · FOFA 发现 <b>${s.fofa_count}</b> 条 · 合并后 <b>${discovered.length}</b> 条资产`;
+  if(s.tags && s.tags.length){
+    html+=`<br>已为本次发现的资产应用标签：<b>${s.tags.map(esc).join('、')}</b>`;
+  }
+  if(s.errors && s.errors.length){
+    html+=`<br><span style="color:#dc2626;font-size:13px">⚠ ${s.errors.join(' | ')}</span>`;
+  }
+  el.innerHTML=html;
+}
+
+function renderResults(){
+  document.getElementById('results-section').classList.remove('hidden');
+  const tb=document.querySelector('#results-table tbody'); tb.innerHTML='';
+  discovered.forEach((item,idx)=>{
+    const tr=document.createElement('tr');
+    const isNew = item.change_type==='新增';
+    tr.innerHTML=`<td><input type="checkbox" class="row-check" data-idx="${idx}" ${isNew?'checked':''}></td>
+      <td>${item.domain||''}</td><td>${item.ip||'-'}</td><td>${item.port||'-'}</td>
+      <td>${item.title||'-'}</td><td>${item.country||'-'}</td>
+      <td><span class="src-badge ${item.source}">${item.source||''}</span></td>
+      <td>${isNew?'<span class="badge-new">新增</span>':item.change_type==='更新'?'<span class="badge-update">已更新</span>':'<span class="badge-skip">已存在</span>'}</td>`;
+    tb.appendChild(tr);
+  });
+}
+
+function toggleAll(cb){ document.querySelectorAll('.row-check').forEach(c=>c.checked=cb.checked); }
+
+loadTagSuggest();
+
+function getSelected(){
+  return document.querySelectorAll('.row-check:checked');
+}
+
+async function importSelected(){
+  const sel=getSelected();
+  if(!sel.length){ alert('请至少勾选一条'); return; }
+  const items=[]; sel.forEach(c=>items.push(discovered[parseInt(c.dataset.idx)]));
+  await doImport(items);
+}
+
+async function importAll(){
+  if(!discovered.length){ alert('无数据'); return; }
+  await doImport(discovered);
+}
+
+async function doImport(items){
+  const resp=await fetch('/api/assets/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items})});
+  const data=await resp.json();
+  if(data.ok){ alert(`导入完成：新增 ${data.imported}，更新 ${data.updated}`); location.href='/assets'; }
+  else alert('导入失败: '+(data.error||''));
+}
+</script>
+</body>
+</html>

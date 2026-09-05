@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TXT批量导入 - Web 资产管理系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-brand">🛡️ Web 资产管理系统</div>
+  <div class="nav-links">
+    <a href="/">📊 仪表盘</a>
+    <a href="/search">🔍 全局搜索</a>
+    <a href="/scan">🚀 域名探索</a>
+    <a href="/assets">📦 资产库</a>
+    <a href="/txt-import" class="active">📄 TXT导入</a>
+    <a href="/graph">📊 资产图谱</a>
+    <a href="/ai">🤖 AI助手</a>
+    <a href="/settings">⚙️ 系统设置</a>
+  </div>
+  <form class="nav-search" onsubmit="quickSearch(event)">
+    <input type="text" id="nav-q" placeholder="快速搜索… 回车" list="tag-suggest">
+  </form>
+</nav>
+
+<main class="container">
+  <h1>TXT 批量导入</h1>
+  <p class="muted">上传 .txt 文件（每行一个域名），解析后可手动补充国家、CMS、标签，再勾选导入。国家/CMS 选项支持手动添加新值。</p>
+
+  <div class="scan-box">
+    <label class="btn-primary">选择 TXT 文件<input type="file" id="txt-file" accept=".txt" hidden onchange="uploadTxt(this)"></label>
+    <input type="text" id="import-tags" class="scan-tags" placeholder="标签（可选，多个用逗号分隔，如 客户X,生产环境）" list="tag-suggest" autocomplete="off">
+  </div>
+  <datalist id="tag-suggest"></datalist>
+
+  <div id="edit-section" class="hidden">
+    <div class="results-toolbar">
+      <h3>批量编辑 (<span id="domain-count">0</span> 个域名)</h3>
+      <div class="results-actions">
+        <label><input type="checkbox" id="select-all-txt" onchange="toggleAllTxt(this)"> 全选</label>
+        <button onclick="applyImportTags()" class="btn-outline">批量应用标签</button>
+        <button onclick="importSelectedTxt()" class="btn-primary">导入选中</button>
+        <button onclick="importAllTxt()" class="btn-outline">全部导入</button>
+      </div>
+    </div>
+
+    <div class="batch-set-row">
+      <span class="muted">批量设置：</span>
+      <label>国家
+        <div class="inline-select">
+          <select id="batch-country"><option value="">(不修改)</option></select>
+          <button type="button" class="mini-btn" onclick="quickAddOption('country')" title="添加新的国家/地区">＋</button>
+        </div>
+      </label>
+      <label>CMS
+        <div class="inline-select">
+          <select id="batch-cms"><option value="">(不修改)</option></select>
+          <button type="button" class="mini-btn" onclick="quickAddOption('cms')" title="添加新的CMS类型">＋</button>
+        </div>
+      </label>
+      <label>标签<input type="text" id="batch-tags" placeholder="如: 官网,测试"></label>
+      <label class="checkbox-row"><input type="checkbox" id="batch-only-checked" checked> 仅应用到勾选行</label>
+      <button onclick="applyBatchSet()" class="btn-outline">应用</button>
+    </div>
+
+    <div class="table-scroll">
+      <table class="asset-table" id="txt-table">
+        <thead><tr>
+          <th><input type="checkbox" onchange="toggleAllTxt(this)"></th>
+          <th>域名</th><th>国家/地区</th><th>CMS类型</th><th>标签（逗号分隔）</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+let DICT = {country:[], cms:[], source:[]};
+
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function quickSearch(e){ e.preventDefault(); const v=document.getElementById('nav-q').value.trim(); if(v) location.href='/search?q='+encodeURIComponent(v); }
+
+/* fill tag autocomplete from existing tags */
+async function loadTagSuggest(){
+  try{
+    const resp=await fetch('/api/tags');
+    const data=await resp.json();
+    if(data.ok){
+      document.getElementById('tag-suggest').innerHTML = Object.keys(data.tags||{}).map(t=>`<option value="${esc(t)}">`).join('');
+    }
+  }catch(e){}
+}
+
+async function loadDict(){
+  const resp=await fetch('/api/dict');
+  const data=await resp.json();
+  if(data.ok) DICT = {country:data.options.country||[], cms:data.options.cms||[], source:data.options.source||[]};
+  fillBatchSelects();
+  // refresh existing row selects, keeping current values
+  document.querySelectorAll('#txt-table tbody tr').forEach(tr=>{
+    fillRowSelects(tr);
+  });
+}
+
+function optsHtml(list, selected, emptyLabel){
+  let html = emptyLabel!=null ? `<option value="">${emptyLabel}</option>` : '';
+  html += list.map(v=>`<option value="${esc(v)}" ${v===selected?'selected':''}>${esc(v)}</option>`).join('');
+  return html;
+}
+
+function fillBatchSelects(){
+  const bc=document.getElementById('batch-country');
+  const bm=document.getElementById('batch-cms');
+  const cv=bc.value, mv=bm.value;
+  bc.innerHTML = optsHtml(DICT.country, null, '(不修改)');
+  bm.innerHTML = optsHtml(DICT.cms, null, '(不修改)');
+  if(cv) bc.value=cv;
+  if(mv) bm.value=mv;
+}
+
+function fillRowSelects(tr){
+  const selC=tr.querySelector('.txt-country');
+  const selM=tr.querySelector('.txt-cms');
+  const vc=selC.value, vm=selM.value;
+  selC.innerHTML = optsHtml(DICT.country, null, '未知');
+  selM.innerHTML = optsHtml(DICT.cms, null, '未知');
+  if(vc){ selC.value=vc; if(selC.value!==vc) selC.insertAdjacentHTML('beforeend', `<option value="${esc(vc)}" selected>${esc(vc)}</option>`); }
+  if(vm){ selM.value=vm; if(selM.value!==vm) selM.insertAdjacentHTML('beforeend', `<option value="${esc(vm)}" selected>${esc(vm)}</option>`); }
+}
+
+async function uploadTxt(input){
+  const fd=new FormData(); fd.append('file',input.files[0]);
+  const resp=await fetch('/api/txt-import',{method:'POST',body:fd});
+  const data=await resp.json();
+  if(!data.ok){ alert('解析失败: '+(data.error||'')); return; }
+  await loadDict();
+  const preTags=document.getElementById('import-tags').value.trim();
+  renderEditTable(data.domains, preTags);
+}
+
+function renderEditTable(domains, preTags){
+  document.getElementById('edit-section').classList.remove('hidden');
+  document.getElementById('domain-count').textContent=domains.length;
+  const tb=document.querySelector('#txt-table tbody'); tb.innerHTML='';
+  domains.forEach((d,i)=>{
+    const tr=document.createElement('tr');
+    const tagsVal=preTags?`value="${esc(preTags)}"`:'';
+    tr.innerHTML=`<td><input type="checkbox" class="txt-check" data-idx="${i}" checked></td>
+      <td>${esc(d)}</td>
+      <td><select class="txt-country">${optsHtml(DICT.country, null, '未知')}</select></td>
+      <td><select class="txt-cms">${optsHtml(DICT.cms, null, '未知')}</select></td>
+      <td><input type="text" class="txt-tags" ${tagsVal} placeholder="官网,测试"></td>`;
+    tr.dataset.domain=d;
+    tb.appendChild(tr);
+  });
+}
+
+/* 批量应用标签：将页面上方标签输入框中的标签，追加到所有勾选行的标签列 */
+function applyImportTags(){
+  const tagsVal=document.getElementById('import-tags').value.trim();
+  if(!tagsVal){ alert('请先在页面上方输入要应用的标签'); return; }
+  const addTags=tagsVal.split(/[,，、]/).map(s=>s.trim()).filter(Boolean);
+  let n=0;
+  document.querySelectorAll('#txt-table tbody tr').forEach(tr=>{
+    const cb=tr.querySelector('.txt-check');
+    if(!cb.checked) return;
+    const inp=tr.querySelector('.txt-tags');
+    const existing=inp.value.split(/[,，、]/).map(s=>s.trim()).filter(Boolean);
+    addTags.forEach(t=>{ if(t && !existing.includes(t)) existing.push(t); });
+    inp.value=existing.join(',');
+    n++;
+  });
+  alert(n?`已为 ${n} 行追加标签`:'未勾选任何行');
+}
+
+function toggleAllTxt(cb){ document.querySelectorAll('.txt-check').forEach(c=>c.checked=cb.checked); }
+
+/* manual add of a new country/CMS option; applies it to batch select (or rows if none parsed yet) */
+async function quickAddOption(dtype){
+  const label = dtype==='country' ? '国家/地区' : 'CMS类型';
+  const value = prompt(`添加新的${label}:`);
+  if(value==null) return;
+  const v=value.trim();
+  if(!v){ alert('名称不能为空'); return; }
+  const resp=await fetch('/api/dict/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:dtype, value:v})});
+  const data=await resp.json();
+  if(!data.ok){ alert('添加失败: '+(data.error||'')); return; }
+  await loadDict();
+  document.getElementById(dtype==='country'?'batch-country':'batch-cms').value=v;
+}
+
+function applyBatchSet(){
+  const country=document.getElementById('batch-country').value;
+  const cms=document.getElementById('batch-cms').value;
+  const tags=document.getElementById('batch-tags').value.trim();
+  const onlyChecked=document.getElementById('batch-only-checked').checked;
+  if(!country && !cms && !tags){ alert('请先选择要批量设置的值'); return; }
+  let n=0;
+  document.querySelectorAll('#txt-table tbody tr').forEach(tr=>{
+    const cb=tr.querySelector('.txt-check');
+    if(onlyChecked && !cb.checked) return;
+    if(country) tr.querySelector('.txt-country').value=country;
+    if(cms) tr.querySelector('.txt-cms').value=cms;
+    if(tags) tr.querySelector('.txt-tags').value=tags;
+    n++;
+  });
+  alert(`已应用到 ${n} 行`);
+}
+
+function collectRows(onlyChecked){
+  const rows=[];
+  document.querySelectorAll('#txt-table tbody tr').forEach(tr=>{
+    const cb=tr.querySelector('.txt-check');
+    if(onlyChecked && !cb.checked) return;
+    rows.push({
+      domain:tr.dataset.domain,
+      country:tr.querySelector('.txt-country').value,
+      cms:tr.querySelector('.txt-cms').value,
+      tags:tr.querySelector('.txt-tags').value,
+      source:'txt_import',
+    });
+  });
+  return rows;
+}
+
+async function importSelectedTxt(){
+  const rows=collectRows(true);
+  if(!rows.length){ alert('请勾选至少一条'); return; }
+  await doImportTxt(rows);
+}
+
+async function importAllTxt(){
+  const rows=collectRows(false);
+  if(!rows.length){ alert('无数据'); return; }
+  await doImportTxt(rows);
+}
+
+async function doImportTxt(rows){
+  const resp=await fetch('/api/txt-import/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:rows})});
+  const data=await resp.json();
+  if(data.ok){ alert(`导入完成：新增 ${data.imported}，更新 ${data.updated}`); location.href='/assets'; }
+  else alert('导入失败: '+(data.error||''));
+}
+
+loadDict();
+loadTagSuggest();
+</script>
+</body>
+</html>

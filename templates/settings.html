@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>系统设置 - Web 资产管理系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-brand">🛡️ Web 资产管理系统</div>
+  <div class="nav-links">
+    <a href="/">📊 仪表盘</a>
+    <a href="/search">🔍 全局搜索</a>
+    <a href="/scan">🚀 域名探索</a>
+    <a href="/assets">📦 资产库</a>
+    <a href="/txt-import">📄 TXT导入</a>
+    <a href="/graph">📊 资产图谱</a>
+    <a href="/ai">🤖 AI助手</a>
+    <a href="/settings" class="active">⚙️ 系统设置</a>
+  </div>
+  <form class="nav-search" onsubmit="quickSearch(event)">
+    <input type="text" id="nav-q" placeholder="快速搜索… 回车">
+  </form>
+</nav>
+
+<main class="container">
+  <h1>系统设置</h1>
+
+  <div class="settings-card">
+    <h3>FOFA API 配置</h3>
+    <p class="muted">配置后域名探索将同时调用 crt.sh 与 FOFA。未配置则仅用 crt.sh。</p>
+    <form onsubmit="saveAll(event)">
+      <label>FOFA Email<input type="text" id="fofa_email" value="{{ conf.fofa_email }}"></label>
+      <label>FOFA API Key<input type="text" id="fofa_api_key" value="{{ conf.fofa_api_key }}"></label>
+      <label>扫描超时时间（秒）<input type="number" id="scan_timeout" value="{{ conf.scan_timeout }}" min="5" max="120"></label>
+    </form>
+  </div>
+
+  <div class="settings-card">
+    <h3>指纹识别配置</h3>
+    <p class="muted">调整指纹识别的并发数、超时时间和批处理大小，优化大量资产的识别速度。</p>
+    <form onsubmit="saveAll(event)">
+      <label>并发线程数<input type="number" id="fingerprint_concurrency" value="{{ conf.fingerprint_concurrency }}" min="1" max="50" placeholder="默认20"></label>
+      <label>HTTP请求超时（秒）<input type="number" id="fingerprint_timeout" value="{{ conf.fingerprint_timeout }}" min="1" max="30" placeholder="默认3"></label>
+      <label>批处理大小（每批资产数）<input type="number" id="fingerprint_batch_size" value="{{ conf.fingerprint_batch_size }}" min="10" max="500" placeholder="默认100"></label>
+    </form>
+  </div>
+
+  <div class="settings-card">
+    <h3>定时自动扫描</h3>
+    <p class="muted">启用后每天定时自动扫描所有已添加的根域。</p>
+    <form onsubmit="saveAll(event)">
+      <label class="checkbox-row"><input type="checkbox" id="scheduled_scan_enabled" {{ 'checked' if conf.scheduled_scan_enabled=='true' }}> 启用定时扫描</label>
+      <label>扫描时间 (HH:MM)<input type="time" id="scheduled_scan_time" value="{{ conf.scheduled_scan_time }}"></label>
+    </form>
+  </div>
+
+  <div class="settings-card">
+    <h3>钉钉通知</h3>
+    <p class="muted">扫描完成或检测到高危CVE时自动发送钉钉消息。</p>
+    <form onsubmit="saveAll(event)">
+      <label class="checkbox-row"><input type="checkbox" id="dingtalk_enabled" {{ 'checked' if conf.dingtalk_enabled=='true' }}> 启用钉钉通知</label>
+      <label>Webhook 地址<input type="text" id="dingtalk_webhook" value="{{ conf.dingtalk_webhook }}" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."></label>
+      <div class="checkbox-group">
+        <label class="checkbox-row"><input type="checkbox" id="dingtalk_notify_new" {{ 'checked' if conf.dingtalk_notify_new=='true' }}> 新资产发现</label>
+        <label class="checkbox-row"><input type="checkbox" id="dingtalk_notify_change" {{ 'checked' if conf.dingtalk_notify_change=='true' }}> 资产属性变更</label>
+        <label class="checkbox-row"><input type="checkbox" id="dingtalk_notify_cve" {{ 'checked' if conf.dingtalk_notify_cve=='true' }}> CVE高危漏洞预警</label>
+      </div>
+    </form>
+  </div>
+
+  <div class="settings-card">
+    <h3>代理配置</h3>
+    <p class="muted">所有外部请求（FOFA、crt.sh、Whois、NVD、Nuclei）将通过代理发送。Nuclei 扫描开始前会自动检测代理连通性与出口 IP。</p>
+    <form onsubmit="saveAll(event)">
+      <label class="checkbox-row"><input type="checkbox" id="proxy_enabled" {{ 'checked' if conf.proxy_enabled=='true' }}> 启用代理</label>
+      <label>代理地址<input type="text" id="proxy_url" value="{{ conf.proxy_url }}" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"></label>
+      <div class="dict-add-row" style="margin:0">
+        <button type="button" onclick="testProxyConnection()" class="btn-outline" id="test-proxy-btn">🧪 测试代理连接</button>
+      </div>
+      <div id="proxy-test-result"></div>
+    </form>
+  </div>
+
+  <div class="settings-card">
+    <h3>端口扫描配置（轻量 TCP banner 识别）</h3>
+    <p class="muted">新发现的带 IP 资产会自动执行轻量端口探测（纯 Python socket，仅 connect + banner 读取，不发送任何攻击载荷）；也可在资产库手动勾选触发。同一资产 24 小时内自动去重（手动触发忽略）。</p>
+    <form onsubmit="saveAll(event)">
+      <label class="checkbox-row"><input type="checkbox" id="port_scan_auto_enabled" {{ 'checked' if conf.port_scan_auto_enabled=='true' }}> 域名探索完成后自动扫描新资产端口</label>
+      <label>端口列表<input type="text" id="port_scan_ports" value="{{ conf.port_scan_ports }}" placeholder="21,22,23,25,80,443,3306,6379,8080,8443"></label>
+      <div class="form-grid">
+        <label>连接超时（秒）<input type="number" id="port_scan_timeout" value="{{ conf.port_scan_timeout }}" min="1" max="15" placeholder="默认3"></label>
+        <label>扫描并发数<input type="number" id="port_scan_concurrency" value="{{ conf.port_scan_concurrency }}" min="1" max="200" placeholder="默认20"></label>
+      </div>
+    </form>
+  </div>
+
+  <div class="settings-card ai-settings">
+    <h3>AI 模型配置（多模型）</h3>
+    <p class="muted">为「🤖 AI助手」提供自然语言能力。启用并填写 API Key 的模型即可在 AI 助手中使用；「⭐ 默认」的模型用于新会话。所有修改在页面底部点击「💾 保存配置」统一生效。</p>
+
+    <div class="ai-statusbar">
+      <div class="ai-status-side">
+        <span class="ai-status-label">当前默认模型</span>
+        <div class="ai-status-line">
+          <span class="ai-status-model" id="ai-status-model">—</span>
+          <span class="ai-status-chip st-idle" id="ai-status-chip">⚪ 状态未知</span>
+        </div>
+      </div>
+      <div class="ai-status-side">
+        <span class="ai-status-label">切换默认模型（新会话使用）</span>
+        <select id="ai-default-switch" onchange="aiSwitchDefault(this.value)" title="从已启用的模型中选择一个作为默认"></select>
+      </div>
+    </div>
+
+    <div class="ai-cards-grid" id="ai-cards-grid"></div>
+
+    <div class="ai-add-row">
+      <button type="button" class="btn-outline" onclick="openAddProvider()">➕ 添加模型</button>
+      <span class="muted" style="font-size:12.5px">支持任意 OpenAI 兼容 / Anthropic 原生网关</span>
+    </div>
+
+    <details class="ai-tool-log">
+      <summary>🔍 最近工具调用记录（审计日志）</summary>
+      <div id="ai-tool-log"></div>
+    </details>
+    <details class="ai-tool-log">
+      <summary>💰 模型调用统计与上游请求日志</summary>
+      <div id="ai-call-log"></div>
+    </details>
+  </div>
+
+  <div class="settings-card">
+    <h3>Nuclei 配置</h3>
+    <p class="muted">用于对资产执行被动漏洞扫描（Nuclei v3.2+ 支持 <code>-passive</code>，仅运行无攻击性探测模板）。扫描前会自动进行代理与出口 IP 环境检测。</p>
+    <form onsubmit="saveAll(event)">
+      <label>Nuclei 可执行文件路径<input type="text" id="nuclei_path" value="{{ conf.nuclei_path }}" placeholder="留空自动在 PATH 中查找，如 C:\tools\nuclei.exe"></label>
+      <div class="dict-add-row" style="margin:0">
+        <button type="button" onclick="checkNucleiEnv()" class="btn-outline" id="check-nuclei-btn">🔧 检测 Nuclei / 扫描环境</button>
+      </div>
+      <div id="nuclei-env-result"></div>
+    </form>
+  </div>
+
+  <div class="settings-actions">
+    <button onclick="saveAllBtn()" class="btn-primary">💾 保存配置</button>
+    <span class="muted" style="font-size:13px">系统配置与 AI 模型配置将一并保存</span>
+  </div>
+
+  <div class="modal-overlay hidden" id="ai-add-modal" onclick="if(event.target===this)closeAddProvider()">
+    <div class="modal-box">
+      <h4 style="margin:0 0 16px">➕ 添加模型</h4>
+      <div class="form-grid">
+        <label>名称（唯一标识，字母/数字/_/-）<input id="addp-name" maxlength="40" placeholder="my-gateway"></label>
+        <label>显示名称<input id="addp-display" placeholder="我的网关"></label>
+      </div>
+      <div class="form-grid">
+        <label>接入类型<select id="addp-type" onchange="aiAddTypeChanged()">
+          <option value="openai_compat">OpenAI 兼容（GPT / DeepSeek / Gemini 等）</option>
+          <option value="anthropic">Anthropic 原生 Messages API</option>
+        </select></label>
+        <label>API 地址<input id="addp-base" placeholder="https://api.openai.com/v1" oninput="this.dataset.user='1'"></label>
+      </div>
+      <label>API Key<input type="password" id="addp-key" autocomplete="new-password" placeholder="本地 Ollama 可留空"></label>
+      <div class="form-grid">
+        <label>默认模型 ID<input id="addp-model" placeholder="如 gpt-4o"></label>
+        <label>可选模型（逗号分隔，供聊天页下拉）<input id="addp-models" placeholder="gpt-4o, gpt-4o-mini"></label>
+      </div>
+      <div class="addp-checks">
+        <label class="checkbox-row"><input type="checkbox" id="addp-enabled" checked> 立即启用</label>
+        <label class="checkbox-row"><input type="checkbox" id="addp-default"> 设为默认</label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-outline" onclick="closeAddProvider()">取消</button>
+        <button type="button" class="btn-primary" onclick="confirmAddProvider()">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+</main>
+
+<script>
+function quickSearch(e){ e.preventDefault(); const v=document.getElementById('nav-q').value.trim(); if(v) location.href='/search?q='+encodeURIComponent(v); }
+
+function collectConfig(){
+  const cb=id=>document.getElementById(id).checked?'true':'false';
+  return {
+    fofa_email:document.getElementById('fofa_email').value.trim(),
+    fofa_api_key:document.getElementById('fofa_api_key').value.trim(),
+    scan_timeout:document.getElementById('scan_timeout').value,
+    fingerprint_concurrency:document.getElementById('fingerprint_concurrency').value,
+    fingerprint_timeout:document.getElementById('fingerprint_timeout').value,
+    fingerprint_batch_size:document.getElementById('fingerprint_batch_size').value,
+    scheduled_scan_enabled:cb('scheduled_scan_enabled'),
+    scheduled_scan_time:document.getElementById('scheduled_scan_time').value,
+    dingtalk_enabled:cb('dingtalk_enabled'),
+    dingtalk_webhook:document.getElementById('dingtalk_webhook').value.trim(),
+    dingtalk_notify_new:cb('dingtalk_notify_new'),
+    dingtalk_notify_change:cb('dingtalk_notify_change'),
+    dingtalk_notify_cve:cb('dingtalk_notify_cve'),
+    proxy_enabled:cb('proxy_enabled'),
+    proxy_url:document.getElementById('proxy_url').value.trim(),
+    port_scan_auto_enabled:cb('port_scan_auto_enabled'),
+    port_scan_ports:document.getElementById('port_scan_ports').value.trim(),
+    port_scan_timeout:document.getElementById('port_scan_timeout').value,
+    port_scan_concurrency:document.getElementById('port_scan_concurrency').value,
+    nuclei_path:document.getElementById('nuclei_path').value.trim(),
+  };
+}
+
+function showToast(msg, ok){
+  const el=document.getElementById('toast');
+  if(!el) return;
+  el.textContent=msg;
+  el.className='toast '+(ok?'toast-ok':'toast-err');
+  clearTimeout(el._t);
+  el._t=setTimeout(()=>{ el.classList.add('hidden'); },3400);
+}
+
+async function saveAllBtn(){
+  try{
+    await saveAiProviders();
+  }catch(e){
+    showToast('AI 模型配置保存失败：'+(e.message||e),false);
+    return;
+  }
+  try{
+    const resp=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collectConfig())});
+    const data=await resp.json();
+    showToast(data.ok?'✅ 配置已保存，定时任务已更新。':'保存失败',!!data.ok);
+  }catch(e){
+    showToast('保存请求失败',false);
+  }
+}
+
+function saveAll(e){ e.preventDefault(); saveAllBtn(); }
+
+/* render environment check results with colors (green=normal, red=error) */
+function renderEnvResult(el, checks){
+  const color = {ok:'#16a34a', info:'#0369a1', warn:'#d97706', err:'#dc2626'};
+  el.innerHTML = (checks||[]).map(c=>
+    `<div style="color:${color[c.level]||'#334155'};font-size:13px;line-height:1.8">${escHtml(c.text)}</div>`
+  ).join('') || '<span class="muted">检测中…</span>';
+}
+function escHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+async function testProxyConnection(){
+  const btn=document.getElementById('test-proxy-btn');
+  btn.disabled=true; btn.textContent='测试中…（最长约15秒）';
+  const el=document.getElementById('proxy-test-result');
+  el.innerHTML='<span class="muted">正在检测代理连通性与出口 IP…</span>';
+  try{
+    const resp=await fetch('/api/nuclei/env-check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      proxy_enabled:document.getElementById('proxy_enabled').checked,
+      proxy_url:document.getElementById('proxy_url').value.trim(),
+    })});
+    const data=await resp.json();
+    if(!data.ok) throw new Error(data.error||'检测失败');
+    renderEnvResult(el, data.checks);
+    if(data.proxy_enabled && data.proxy_ok) el.innerHTML+='<div style="color:#16a34a;font-size:13px;margin-top:4px">✅ 代理配置有效，可正常发起扫描。</div>';
+    else if(data.proxy_enabled && !data.proxy_ok) el.innerHTML+='<div style="color:#dc2626;font-size:13px;margin-top:4px">❌ 代理不可用，扫描将被禁止，请先修复代理配置。</div>';
+  }catch(e){
+    el.innerHTML=`<div style="color:#dc2626;font-size:13px">检测请求失败: ${escHtml(e.message)}</div>`;
+  }finally{
+    btn.disabled=false; btn.textContent='🧪 测试代理连接';
+  }
+}
+
+async function checkNucleiEnv(){
+  const btn=document.getElementById('check-nuclei-btn');
+  btn.disabled=true; btn.textContent='检测中…';
+  const el=document.getElementById('nuclei-env-result');
+  el.innerHTML='<span class="muted">正在检测…</span>';
+  try{
+    const resp=await fetch('/api/nuclei/env-check');
+    const data=await resp.json();
+    renderEnvResult(el, data.checks);
+    if(!data.ready){
+      el.innerHTML+='<div style="color:#dc2626;font-size:13px;margin-top:4px">❌ 环境未就绪：无法执行 Nuclei 扫描（代理故障或未找到 nuclei）。</div>';
+    }
+  }catch(e){
+    el.innerHTML=`<div style="color:#dc2626;font-size:13px">检测请求失败: ${escHtml(e.message)}</div>`;
+  }finally{
+    btn.disabled=false; btn.textContent='🔧 检测 Nuclei / 扫描环境';
+  }
+}
+
+/* AI assistant audit log (tool invocations) */
+async function loadAiToolLog(){
+  const el=document.getElementById('ai-tool-log');
+  if(!el) return;
+  try{
+    const resp=await fetch('/api/ai/tool-log');
+    const data=await resp.json();
+    if(!data.ok) return;
+    el.innerHTML = (data.log||[]).slice(0,15).map(e=>{
+      const t=(e.created_at||'').slice(11,19);
+      const color = e.status==='ok' ? '#16a34a' : e.status==='error' ? '#dc2626' : '#d97706';
+      return `<div class="tool-log-row"><span style="color:#64748b">${t}</span> <b>${escHtml(e.tool||'')}</b> <span class="muted">${escHtml(String(e.arguments||'').slice(0,60))}</span> <span style="color:${color}">[${escHtml(e.status||'')}]</span></div>`;
+    }).join('') || '<span class="muted">暂无工具调用记录。</span>';
+  }catch(e){ el.innerHTML='<span class="muted">加载失败</span>'; }
+}
+
+/* ---------- multi-model AI provider management (card UI) ---------- */
+let AI_PROVIDERS=[];
+let AI_LAST_TEST={};  // name -> {ok, ms, msg}
+const AI_MANUAL={};   // name -> user expand/collapse override
+const AI_ICONS={deepseek:'🦈',openai:'●',anthropic:'✳️',gemini:'✦',qwen:'☁️',moonshot:'🌙',zhipu:'⚗️',groq:'⚡',mistral:'🌪️',xai:'🤖',openrouter:'🔀',siliconflow:'🌊',ollama:'🐳'};
+
+function aiIcon(name){ return AI_ICONS[name]||'🧩'; }
+function aiProviderByName(name){ return AI_PROVIDERS.find(p=>p.name===name); }
+function aiCardOf(el){ return el.closest('.ai-card'); }
+function aiTypeBadge(type){
+  return type==='anthropic'
+    ? '<span class="prov-badge prov-anthropic">Anthropic 原生</span>'
+    : '<span class="prov-badge prov-openai">OpenAI 兼容</span>';
+}
+function aiTestResultHtml(name){
+  const t=AI_LAST_TEST[name];
+  if(!t) return '';
+  if(t.ok) return '<span class="t-ok">✅ 连接成功 · '+t.ms+' ms</span>';
+  return '<span class="t-err">❌ 连接失败 · '+(t.ms!=null?t.ms+' ms':'')+'</span>'+
+         (t.msg?'<div class="t-detail">'+escHtml(String(t.msg).slice(0,200))+'</div>':'');
+}
+
+async function loadAiProviders(){
+  const grid=document.getElementById('ai-cards-grid');
+  if(!grid) return;
+  for(const k in AI_MANUAL) delete AI_MANUAL[k];
+  try{
+    const resp=await fetch('/api/ai/providers');
+    const data=await resp.json();
+    if(!data.ok) throw new Error('加载失败');
+    AI_PROVIDERS=data.providers||[];
+    grid.innerHTML='';
+  }catch(e){ AI_PROVIDERS=[]; }
+  aiEnsureDefault();
+  renderAiCards();
+}
+
+function renderAiCards(){
+  const grid=document.getElementById('ai-cards-grid');
+  if(!grid) return;
+  grid.innerHTML = AI_PROVIDERS.length
+    ? AI_PROVIDERS.map(renderAiCard).join('')
+    : '<span class="muted">暂无模型配置，点击「➕ 添加模型」创建。</span>';
+  aiUpdateTopbar();
+}
+
+function renderAiCard(p){
+  const name=p.name, on=!!p.enabled, def=!!p.is_default;
+  const dlId='ai-dl-'+name.replace(/[^\w-]/g,'_');
+  const open = (name in AI_MANUAL) ? AI_MANUAL[name] : on;
+  const presets=(p.models_list||[]).map(m=>'<option value="'+escHtml(m)+'"></option>').join('');
+  const keyPh = p.api_key ? '已保存 '+p.api_key+'，留空保持不变' : '尚未填写 API Key（本地 Ollama 可留空）';
+  const adv = p.note ? '<p class="ai-note">'+escHtml(p.note)+'</p>' : '';
+  return ''+
+  '<div class="ai-card'+(on?' on':' off')+(def?' def':'')+'" data-name="'+escHtml(name)+'" data-type="'+escHtml(p.provider_type||'openai_compat')+'">'+
+    '<div class="ai-card-head" onclick="aiToggleCard(this)" title="点击展开/收起配置">'+
+      '<span class="ai-ico">'+aiIcon(name)+'</span>'+
+      '<span class="ai-title"><b>'+escHtml(p.display_name||name)+'</b>'+aiTypeBadge(p.provider_type)+'</span>'+
+      '<span class="ai-state">'+
+        (on?'<span class="pill pill-on">✅ 已启用</span>':'<span class="pill pill-off">⚪ 未启用</span>')+
+        (def?'<span class="pill pill-def">⭐ 默认</span>':'')+
+      '</span>'+
+      '<span class="ai-chevron">'+(open?'▾':'▸')+'</span>'+
+    '</div>'+
+    '<div class="ai-card-body'+(open?'':' collapsed')+'">'+
+      adv+
+      '<div class="ai-row">'+
+        '<label class="checkbox-row ai-chk"><input type="checkbox" class="ai-enable"'+(on?' checked':'')+' onchange="aiToggleEnable(this)"> 启用</label>'+
+        '<label class="checkbox-row ai-chk"><input type="radio" name="ai-default-radio" class="ai-default"'+(def?' checked':'')+(on?'':' disabled')+' onchange="aiToggleDefault(this)"> 设为默认（新会话）</label>'+
+      '</div>'+
+      '<div class="ai-field-grid">'+
+        '<label class="ai-fld">API Key（留空 = 保持已保存值）<span class="ai-keywrap"><input type="password" class="ai-key" autocomplete="new-password" placeholder="'+escHtml(keyPh)+'"><button type="button" class="ai-eye" tabindex="-1" onclick="aiToggleKey(this)" title="显示/隐藏">👁</button></span></label>'+
+        '<label class="ai-fld">默认模型<input list="'+dlId+'" class="ai-model" value="'+escHtml(p.model||'')+'" placeholder="如 deepseek-chat" autocomplete="off"><datalist id="'+dlId+'">'+presets+'</datalist></label>'+
+      '</div>'+
+      '<div class="ai-test-row">'+
+        '<button type="button" class="btn-outline ai-test-btn" onclick="aiTest(this)">🧪 测试连接</button>'+
+        '<div class="ai-test-result">'+aiTestResultHtml(name)+'</div>'+
+      '</div>'+
+      '<details class="ai-adv"><summary>高级选项</summary>'+
+        '<div class="ai-field-grid">'+
+          '<label class="ai-fld">API 地址<input type="text" class="ai-base" value="'+escHtml(p.base_url||'')+'" placeholder="官方端点，留空用内置默认"></label>'+
+          '<label class="ai-fld">可选模型（逗号分隔，供聊天页下拉）<input type="text" class="ai-models" value="'+escHtml((p.models_list||[]).join(', '))+'" placeholder="模型1, 模型2"></label>'+
+          '<label class="ai-fld">温度（0–2，留空 = 0.3）<input type="number" class="ai-temp" min="0" max="2" step="0.1" value="'+escHtml(p.temperature||'')+'" placeholder="0.3"></label>'+
+          '<label class="ai-fld">最大输出 Tokens（留空 = 2048）<input type="number" class="ai-max" min="1" step="1" value="'+escHtml(p.max_tokens||'')+'" placeholder="2048"></label>'+
+        '</div>'+
+      '</details>'+
+    '</div>'+
+  '</div>';
+}
+
+function aiToggleCard(head){
+  const card=aiCardOf(head), body=card.querySelector('.ai-card-body');
+  const open=body.classList.contains('collapsed');
+  body.classList.toggle('collapsed', !open);
+  card.querySelector('.ai-chevron').textContent=open?'▾':'▸';
+  if(card.dataset.name) AI_MANUAL[card.dataset.name]=open;
+}
+function aiSetCardOpen(card, open){
+  const body=card.querySelector('.ai-card-body');
+  if(!body) return;
+  body.classList.toggle('collapsed', !open);
+  card.querySelector('.ai-chevron').textContent=open?'▾':'▸';
+  if(card.dataset.name) AI_MANUAL[card.dataset.name]=open;
+}
+function aiToggleKey(btn){
+  const inp=btn.parentElement.querySelector('.ai-key');
+  if(!inp) return;
+  const show=inp.type==='password';
+  inp.type=show?'text':'password';
+  btn.textContent=show?'🙈':'👁';
+  btn.title=show?'隐藏':'显示';
+}
+
+function aiToggleEnable(cb){
+  const card=aiCardOf(cb);
+  const p=aiProviderByName(card.dataset.name);
+  if(!p) return;
+  p.enabled=cb.checked;
+  card.querySelector('.ai-state').innerHTML =
+    p.enabled?'<span class="pill pill-on">✅ 已启用</span>':'<span class="pill pill-off">⚪ 未启用</span>';
+  const radio=card.querySelector('.ai-default');
+  if(p.enabled){
+    card.classList.remove('off'); card.classList.add('on');
+    radio.disabled=false;
+    aiSetCardOpen(card, true);
+  }else{
+    card.classList.remove('on'); card.classList.add('off');
+    radio.disabled=true; radio.checked=false;
+    p.is_default=false;
+    card.classList.remove('def');
+  }
+  aiEnsureDefault();
+  syncDefaultUi();
+  aiUpdateTopbar();
+}
+
+function aiToggleDefault(radio){
+  const name=aiCardOf(radio).dataset.name;
+  AI_PROVIDERS.forEach(p=>{ p.is_default=!!(p.enabled && p.name===name && radio.checked); });
+  syncDefaultUi();
+  aiUpdateTopbar();
+}
+
+function aiSwitchDefault(name){
+  const target=aiProviderByName(name);
+  if(!target||!target.enabled) return;
+  AI_PROVIDERS.forEach(p=>{ p.is_default=(p===target); });
+  syncDefaultUi();
+  aiUpdateTopbar();
+}
+
+function aiEnsureDefault(){
+  if(AI_PROVIDERS.some(p=>p.enabled&&p.is_default)) return;
+  const first=AI_PROVIDERS.find(p=>p.enabled);
+  if(!first) return;
+  first.is_default=true;
+}
+
+function syncDefaultUi(){
+  document.querySelectorAll('.ai-card').forEach(card=>{
+    const p=aiProviderByName(card.dataset.name);
+    const radio=card.querySelector('.ai-default');
+    if(!radio||!p) return;
+    radio.checked=!!(p.enabled&&p.is_default);
+    radio.disabled=!p.enabled;
+    card.classList.toggle('def', !!(p.enabled&&p.is_default));
+  });
+}
+
+function aiUpdateTopbar(){
+  const modelEl=document.getElementById('ai-status-model');
+  const chip=document.getElementById('ai-status-chip');
+  const sel=document.getElementById('ai-default-switch');
+  if(!modelEl||!chip||!sel) return;
+  const enabled=AI_PROVIDERS.filter(p=>p.enabled);
+  const def=AI_PROVIDERS.find(p=>p.enabled&&p.is_default)||null;
+  if(def){
+    modelEl.textContent=aiIcon(def.name)+' '+(def.display_name||def.name)+' · '+(def.model||'（未设置模型）');
+    const t=AI_LAST_TEST[def.name];
+    if(t&&t.ok){ chip.className='ai-status-chip st-ok'; chip.textContent='✅ 已连接 · '+t.ms+' ms'; }
+    else if(t&&!t.ok){ chip.className='ai-status-chip st-err'; chip.textContent='❌ 连接失败'; }
+    else { chip.className='ai-status-chip st-idle'; chip.textContent='⚪ 已配置，点击「测试连接」验证'; }
+  }else if(!enabled.length){
+    modelEl.textContent='未启用任何模型';
+    chip.className='ai-status-chip st-err';
+    chip.textContent='❌ 无可用模型';
+  }else{
+    const fb=enabled[0];
+    modelEl.textContent=aiIcon(fb.name)+' '+(fb.display_name||fb.name)+' · '+(fb.model||'');
+    chip.className='ai-status-chip st-warn';
+    chip.textContent='⚠️ 未设默认，将使用首个启用模型';
+  }
+  sel.innerHTML = enabled.length
+    ? enabled.map(p=>
+        '<option value="'+escHtml(p.name)+'"'+((def&&def.name===p.name)?' selected':'')+'>'+
+          escHtml(p.display_name||p.name)+' · '+(p.model?escHtml(p.model):'未设置模型')+
+        '</option>').join('')
+    : '<option value="">（无已启用模型）</option>';
+  sel.disabled=!enabled.length;
+}
+
+async function aiTest(btn){
+  const card=aiCardOf(btn);
+  const name=card.dataset.name;
+  const q=s=>card.querySelector(s);
+  const resEl=q('.ai-test-result');
+  const payload={
+    name:name,
+    base_url:q('.ai-base').value.trim(),
+    model:q('.ai-model').value.trim(),
+    models:(q('.ai-models').value||'').split(/[,，]/).map(s=>s.trim()).filter(Boolean),
+  };
+  const key=q('.ai-key').value.trim();
+  if(key) payload.api_key=key;
+  btn.disabled=true;
+  resEl.innerHTML='<span class="muted">测试中…（最长约25秒）</span>';
+  const t0=performance.now();
+  try{
+    const resp=await fetch('/api/ai/providers/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const data=await resp.json();
+    const ms=Math.round(performance.now()-t0);
+    if(data.ok){
+      AI_LAST_TEST[name]={ok:true,ms:ms};
+      resEl.innerHTML='<span class="t-ok">✅ 连接成功 · '+ms+' ms</span>';
+      showToast('「'+(payload.model||name)+'」连接成功 · '+ms+' ms', true);
+    }else{
+      const list=(Array.isArray(data.checks)?data.checks:[]);
+      const msg=data.error || list.map(c=>c.text).join('；') || '测试失败';
+      AI_LAST_TEST[name]={ok:false,ms:ms,msg:msg};
+      resEl.innerHTML='<span class="t-err">❌ 连接失败 · '+ms+' ms</span>'+
+        '<div class="t-detail">'+escHtml(String(msg).slice(0,200))+'</div>';
+    }
+  }catch(e){
+    AI_LAST_TEST[name]={ok:false,msg:e.message};
+    resEl.innerHTML='<span class="t-err">❌ 测试请求失败</span>';
+  }finally{
+    btn.disabled=false;
+  }
+  aiUpdateTopbar();
+}
+
+function collectAiProviders(){
+  return [...document.querySelectorAll('.ai-card')].map(card=>{
+    const q=s=>card.querySelector(s);
+    const name=card.dataset.name;
+    const rec=aiProviderByName(name)||{};
+    const models=(q('.ai-models').value||'').split(/[,，]/).map(s=>s.trim()).filter(Boolean);
+    return {
+      name:name,
+      display_name: rec.display_name || name,
+      provider_type: card.dataset.type || rec.provider_type || 'openai_compat',
+      api_key:q('.ai-key').value.trim(),
+      base_url:q('.ai-base').value.trim(),
+      model:q('.ai-model').value.trim(),
+      models:models,
+      temperature:q('.ai-temp').value,
+      max_tokens:q('.ai-max').value,
+      enabled:q('.ai-enable').checked,
+      is_default:q('.ai-default').checked,
+    };
+  });
+}
+
+async function saveAiProviders(){
+  const providers=collectAiProviders();
+  const resp=await fetch('/api/ai/providers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({providers})});
+  const data=await resp.json();
+  if(!data.ok || (data.errors&&data.errors.length)) throw new Error((data.errors||[]).join('；')||'保存失败');
+  const fresh=await fetch('/api/ai/providers');
+  const fd=await fresh.json();
+  if(fd.ok && fd.providers){
+    AI_PROVIDERS=fd.providers;
+    for(const k in AI_MANUAL) delete AI_MANUAL[k];
+    renderAiCards();
+  }
+  return data;
+}
+
+function openAddProvider(){
+  ['addp-name','addp-display','addp-key','addp-model','addp-models'].forEach(id=>{
+    const el=document.getElementById(id); if(el) el.value='';
+  });
+  const en=document.getElementById('addp-enabled'); if(en) en.checked=true;
+  const df=document.getElementById('addp-default'); if(df) df.checked=false;
+  const type=document.getElementById('addp-type'); if(type) type.value='openai_compat';
+  const base=document.getElementById('addp-base');
+  if(base){ delete base.dataset.user; base.value='https://api.openai.com/v1'; }
+  const modal=document.getElementById('ai-add-modal'); if(modal) modal.classList.remove('hidden');
+}
+function closeAddProvider(){
+  const modal=document.getElementById('ai-add-modal'); if(modal) modal.classList.add('hidden');
+}
+function aiAddTypeChanged(){
+  const base=document.getElementById('addp-base');
+  if(!base||base.dataset.user) return;
+  const t=document.getElementById('addp-type').value;
+  base.value = t==='anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1';
+}
+function confirmAddProvider(){
+  const name=document.getElementById('addp-name').value.trim();
+  const display=document.getElementById('addp-display').value.trim()||name;
+  if(!name){ showToast('请填写模型名称',false); return; }
+  if(!/^[\w-]{1,40}$/.test(name)){ showToast('名称仅允许字母/数字/下划线/短横线（1–40 字符）',false); return; }
+  if(aiProviderByName(name)){ showToast('已存在同名模型「'+name+'」，请换一个名称',false); return; }
+  const type=document.getElementById('addp-type').value;
+  const base=document.getElementById('addp-base').value.trim();
+  const model=document.getElementById('addp-model').value.trim();
+  if(!model){ showToast('请填写默认模型 ID',false); return; }
+  const models=(document.getElementById('addp-models').value||'').split(/[,，]/).map(s=>s.trim()).filter(Boolean);
+  if(!models.includes(model)) models.unshift(model);
+  const enabled=document.getElementById('addp-enabled').checked;
+  const wantDefault=document.getElementById('addp-default').checked;
+  const key=document.getElementById('addp-key').value.trim();
+  const p={
+    name:name, provider_type:type, display_name:display, api_key:key,
+    base_url:base, model:model, models_list:models, note:'自定义接入',
+    temperature:'', max_tokens:'', context_window:0, speed_tier:'',
+    cost_in_per_1m:0, cost_out_per_1m:0,
+    enabled:enabled?1:0, is_default:(enabled&&wantDefault)?1:0,
+  };
+  AI_PROVIDERS.push(p);
+  closeAddProvider();
+  aiEnsureDefault();
+  if(enabled&&wantDefault) aiSwitchDefault(name);
+  renderAiCards();
+  const card=document.querySelector('.ai-card[data-name="'+name+'"]');
+  if(card&&key){ const ki=card.querySelector('.ai-key'); if(ki) ki.value=key; }
+  showToast('已添加「'+display+'」，点击底部「💾 保存配置」生效', true);
+}
+
+async function loadAiCallLog(){
+  const el=document.getElementById('ai-call-log');
+  if(!el) return;
+  try{
+    const resp=await fetch('/api/ai/call-log');
+    const data=await resp.json();
+    if(!data.ok) throw new Error('加载失败');
+    let html='';
+    if((data.summary||[]).length){
+      html+='<table class="ai-table" style="margin:6px 0 10px;max-width:100%"><thead><tr><th>服务</th><th>次数</th><th>输入 tokens</th><th>输出 tokens</th><th>估算费用 ($)</th></tr></thead><tbody>'+
+        data.summary.map(r=>'<tr><td>'+escHtml(r.provider)+'</td><td>'+r.calls+'</td><td>'+r.prompt_tokens+'</td><td>'+r.completion_tokens+'</td><td>'+Number(r.cost_est||0).toFixed(6)+'</td></tr>').join('')+'</tbody></table>';
+    }
+    html+=(data.log||[]).slice(0,12).map(e=>{
+      const t=(e.created_at||'').slice(11,19);
+      const ok=e.ok===1;
+      return '<div class="tool-log-row"><span style="color:#64748b">'+t+'</span> <b>'+escHtml(e.provider||'')+'</b> <span class="muted">'+escHtml(e.model||'')+'</span> <span style="color:'+(ok?'#16a34a':'#dc2626')+'">['+(ok?'ok':escHtml(e.error_type||'error'))+']</span> <span class="muted">'+(e.latency_ms!=null?e.latency_ms+'ms':'')+'</span></div>';
+    }).join('')||'<span class="muted">暂无上游请求记录。</span>';
+    el.innerHTML=html;
+  }catch(e){ el.innerHTML='<span class="muted">加载失败</span>'; }
+}
+
+loadAiToolLog();
+loadAiCallLog();
+loadAiProviders();
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeAddProvider(); });
+</script>
+</body>
+</html>

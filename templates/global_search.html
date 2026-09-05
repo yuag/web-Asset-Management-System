@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>全局搜索 - Web 资产管理系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<nav class="topnav">
+  <div class="nav-brand">🛡️ Web 资产管理系统</div>
+  <div class="nav-links">
+    <a href="/">📊 仪表盘</a>
+    <a href="/search" class="active">🔍 全局搜索</a>
+    <a href="/scan">🚀 域名探索</a>
+    <a href="/assets">📦 资产库</a>
+    <a href="/txt-import">📄 TXT导入</a>
+    <a href="/graph">📊 资产图谱</a>
+    <a href="/ai">🤖 AI助手</a>
+    <a href="/settings">⚙️ 系统设置</a>
+  </div>
+  <form class="nav-search" onsubmit="quickSearch(event)">
+    <input type="text" id="nav-q" placeholder="快速搜索… 回车" list="tag-suggest">
+  </form>
+</nav>
+
+<main class="container">
+  <h1>🔍 全局搜索</h1>
+  <p class="muted">在全部资产中快速定位：支持域名 / IP / URL / 标题 / Server / CMS 全文模糊搜索，并可组合国家、CMS、标签、来源进行筛选。点击结果中的域名可跳转到资产库编辑。</p>
+
+  <datalist id="tag-suggest">
+    {% for tag in tags.keys() %}<option value="{{ tag }}">{% endfor %}
+  </datalist>
+
+  <div class="gs-search-box">
+    <input type="text" id="gs-q" placeholder="搜索域名、IP、URL、标题…" list="tag-suggest">
+    <button onclick="doSearch(1)" class="btn-primary">搜索</button>
+    <button onclick="resetSearch()" class="btn-outline">重置</button>
+    <button onclick="exportCSV()" class="btn-outline">导出CSV</button>
+  </div>
+
+  <div class="gs-filters">
+    <span class="muted">筛选：</span>
+    <select id="gs-country" onchange="doSearch(1)">
+      <option value="">🌍 全部国家</option>
+    </select>
+    <select id="gs-cms" onchange="doSearch(1)">
+      <option value="">📦 全部CMS</option>
+    </select>
+    <select id="gs-source" onchange="doSearch(1)">
+      <option value="">📂 全部来源</option>
+    </select>
+    <select id="gs-tags" multiple size="1" title="标签多选（按住 Ctrl 多选）" onchange="doSearch(1)">
+      {% for tag in tags.keys() %}<option value="{{ tag }}">{{ tag }}</option>{% endfor %}
+    </select>
+    <span class="muted" style="font-size:12px">（Ctrl 可多选标签）</span>
+  </div>
+
+  <div id="gs-info" class="gs-info"></div>
+
+  <div class="table-scroll">
+    <table class="asset-table" id="gs-table">
+      <thead><tr>
+        <th>域名</th><th>URL</th><th>IP</th><th>端口</th><th>标题</th>
+        <th>国家</th><th>CMS</th><th>Server</th><th>来源</th><th>标签</th><th>更新时间</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div id="gs-empty" class="gs-empty hidden">未找到匹配的资产，试试其他关键词吧</div>
+
+  <div class="pagination">
+    <span id="gs-page-info"></span>
+    <button onclick="prevPage()" id="gs-prev">上一页</button>
+    <button onclick="nextPage()" id="gs-next">下一页</button>
+  </div>
+</main>
+
+<script>
+let DICT = {country:[], cms:[], source:[]};
+let currentPage = 1, totalPages = 1;
+
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+function quickSearch(e){ e.preventDefault(); const v=document.getElementById('nav-q').value.trim(); if(v) location.href='/search?q='+encodeURIComponent(v); }
+
+async function loadDict(){
+  const resp = await fetch('/api/dict');
+  const data = await resp.json();
+  if(data.ok) DICT = {country:data.options.country||[], cms:data.options.cms||[], source:data.options.source||[]};
+  fillSelect('gs-country', DICT.country, '🌍 全部国家');
+  fillSelect('gs-cms', DICT.cms, '📦 全部CMS');
+  fillSelect('gs-source', DICT.source, '📂 全部来源');
+}
+
+function fillSelect(id, list, emptyLabel){
+  let html = `<option value="">${emptyLabel}</option>`;
+  html += list.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  document.getElementById(id).innerHTML = html;
+}
+
+/* escape + wrap matching query tokens in <mark> */
+let hlTokens = [];
+function hl(s){
+  if(s==null || s==='') return '';
+  let out = esc(s);
+  hlTokens.forEach(t=>{
+    if(!t) return;
+    const te = esc(t);
+    if(te) out = out.split(te).join('<mark>'+te+'</mark>');
+  });
+  return out;
+}
+
+function getParams(){
+  const p = new URLSearchParams();
+  const q = document.getElementById('gs-q').value.trim();
+  if(q) p.set('search', q);
+  const country = document.getElementById('gs-country').value;
+  const cms = document.getElementById('gs-cms').value;
+  const source = document.getElementById('gs-source').value;
+  if(country) p.set('country', country);
+  if(cms) p.set('cms', cms);
+  if(source) p.set('source', source);
+  [...document.getElementById('gs-tags').selectedOptions].forEach(o=>{ if(o.value) p.append('tags', o.value); });
+  return p;
+}
+
+async function doSearch(page){
+  currentPage = page || 1;
+  const p = getParams();
+  p.set('page', currentPage);
+  p.set('per_page', 20);
+  const q = document.getElementById('gs-q').value.trim();
+  hlTokens = q ? q.split(/[\s,，、]+/) : [];
+  const resp = await fetch('/api/assets?'+p.toString());
+  const data = await resp.json();
+  renderResults(data);
+}
+
+function renderResults(data){
+  const total = data.total||0;
+  const perPage = data.per_page||20;
+  totalPages = Math.ceil(total/perPage)||1;
+  const tb = document.querySelector('#gs-table tbody'); tb.innerHTML='';
+  document.getElementById('gs-empty').classList.toggle('hidden', total>0);
+  document.getElementById('gs-info').textContent = total>0 ? `共找到 ${total} 条匹配资产` : '';
+  document.getElementById('gs-page-info').textContent = `第 ${currentPage}/${totalPages} 页`;
+  document.getElementById('gs-prev').disabled = currentPage<=1;
+  document.getElementById('gs-next').disabled = currentPage>=totalPages;
+  (data.assets||[]).forEach(a=>{
+    const tr=document.createElement('tr');
+    const tags=(a.tags||[]).map(t=>`<span class="mini-tag">${esc(t)}</span>`).join(' ');
+    const src=esc(a.source)||'-';
+    tr.innerHTML=`<td><a class="domain-link" href="/assets?open=${a.id}" title="点击跳转到资产库编辑">${hl(a.domain)}</a></td>
+      <td>${hl(a.url)||'-'}</td><td>${hl(a.ip)||'-'}</td><td>${hl(a.port)||'-'}</td>
+      <td>${hl(a.title)||'-'}</td><td>${hl(a.country)||'-'}</td><td>${hl(a.cms)||'-'}</td>
+      <td>${hl(a.server)||'-'}</td>
+      <td><span class="src-badge">${src}</span></td>
+      <td>${tags||'-'}</td><td>${esc((a.updated_at||'').slice(0,16))||'-'}</td>`;
+    tb.appendChild(tr);
+  });
+}
+
+function prevPage(){ if(currentPage>1) doSearch(currentPage-1); }
+function nextPage(){ if(currentPage<totalPages) doSearch(currentPage+1); }
+
+function resetSearch(){
+  document.getElementById('gs-q').value='';
+  document.getElementById('gs-country').value='';
+  document.getElementById('gs-cms').value='';
+  document.getElementById('gs-source').value='';
+  [...document.getElementById('gs-tags').selectedOptions].forEach(o=>o.selected=false);
+  doSearch(1);
+}
+
+function exportCSV(){
+  const p = getParams();
+  location.href = '/api/assets/export?'+p.toString();
+}
+
+function initFromUrl(){
+  const p = new URLSearchParams(location.search);
+  const q = p.get('q') || p.get('search') || '';
+  document.getElementById('gs-q').value = q;
+  if(p.get('country')) document.getElementById('gs-country').value = p.get('country');
+  if(p.get('cms')) document.getElementById('gs-cms').value = p.get('cms');
+  if(p.get('source')) document.getElementById('gs-source').value = p.get('source');
+  const tagVals = p.getAll('tags');
+  if(tagVals.length){
+    [...document.getElementById('gs-tags').options].forEach(o=>{ if(tagVals.includes(o.value)) o.selected=true; });
+  }
+}
+
+(async function init(){
+  await loadDict();
+  initFromUrl();
+  doSearch(1);
+})();
+</script>
+</body>
+</html>
