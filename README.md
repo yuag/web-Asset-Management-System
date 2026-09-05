@@ -2,6 +2,32 @@
 
 自动化 Web 资产管理系统：根域扫描、子域名发现、指纹识别、CVE 预警、定时扫描、钉钉告警。
 
+<img width="1834" height="806" alt="image" src="https://github.com/user-attachments/assets/b1b21968-de3d-419c-9490-72d2585fcc26" />
+
+<img width="1452" height="838" alt="9331a827-3388-4c6d-8bda-675daf387dbc" src="https://github.com/user-attachments/assets/e617aca5-5b24-46f3-9b4f-073f10703f89" />
+
+<img width="1714" height="880" alt="da580243-8ebf-4377-9d7a-8fc8cc29a34b" src="https://github.com/user-attachments/assets/252a3b6c-d9d9-40fb-a4c7-aa095663ca01" />
+
+<img width="1728" height="902" alt="566c5d45-0226-43a5-8589-3124e7a2336d" src="https://github.com/user-attachments/assets/d56946e6-2e4d-4eaa-bb13-c84b0fd0b946" />
+
+
+<img width="738" height="834" alt="aa982e7b-50c0-4b50-9fc0-858dfcaea52e" src="https://github.com/user-attachments/assets/b387a941-1cc3-436c-a9d5-8a00b2cce698" />
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ## 功能一览
 
 ### 核心功能
